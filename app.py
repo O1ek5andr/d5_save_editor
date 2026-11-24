@@ -45,6 +45,11 @@ class SaveEditor:
         ttk.Button(top, text="Save as new slot...", command=self.save_copy).pack(
             side="left", padx=(8, 0)
         )
+        ttk.Button(
+            top,
+            text="Subdue all residents...",
+            command=self.subdue_all_residents,
+        ).pack(side="left", padx=(8, 0))
         ttk.Label(top, textvariable=self.status_text).pack(side="right")
 
         ttk.Label(self.root, textvariable=self.path_text, padding=(12, 0)).pack(
@@ -362,6 +367,29 @@ class SaveEditor:
         ttk.Button(buttons, text="Apply", command=apply_residents).pack(
             side="right", padx=(0, 8)
         )
+
+    def subdue_all_residents(self) -> None:
+        if self.document is None:
+            messagebox.showinfo("No save loaded", "Open a save file first.")
+            return
+        if not messagebox.askyesno(
+            "Subdue all residents",
+            "Mark every non-empty resident on equipped items for all army and "
+            "reserve characters as subdued? Warehouse items are not changed.",
+            parent=self.root,
+        ):
+            return
+
+        try:
+            self._apply_current_unit()
+            subdued_count = self.document.subdue_all_residents()
+        except ValueError as error:
+            messagebox.showerror(
+                "Could not subdue residents", str(error), parent=self.root
+            )
+            return
+
+        self.status_text.set(f"Residents subdued: {subdued_count}")
 
     def _apply_current_unit(self) -> None:
         if self.document is None or self.selected_slot is None:

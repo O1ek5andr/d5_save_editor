@@ -26,6 +26,8 @@ The first version edits:
 - The five equipped-item IDs, levels, types, and ranks for a selected character
 - Nine resident slots on each equipped item, including resident ID, unsubdued
   level, maximum growth, and subdued state
+- A bulk action to subdue all non-empty residents on equipped items for every
+  army and reserve character
 
 The warehouse item list and `SystemSave.sav` are not edited. Equipment IDs are
 raw game IDs; the editor does not validate them against the game's item

@@ -26,6 +26,7 @@ from d5_save_editor.savefile import (
     ITEM_RESIDENT_SUBDUED_OFFSET,
     MAX_EQUIPMENT_LEVEL,
     MAX_HL,
+    RESERVE_COUNT_OFFSET,
     ROSTER_OFFSET,
     SAVE_MAGIC,
     STATE_SIZE,
@@ -34,6 +35,7 @@ from d5_save_editor.savefile import (
     UNIT_NAME_OFFSET,
     UNIT_SIZE,
     UNIT_USED_OFFSET,
+    UNIT_SLOTS,
     UNIT_WEAPON_OFFSET,
     WEAPON_SIZE,
     SaveDocument,
@@ -137,6 +139,70 @@ class SaveFileTests(unittest.TestCase):
         self.assertEqual(saved.resident_values(slot, item_index), values)
         self.assertEqual(saved.state[resident + 2], 0xA5)
         self.assertEqual(saved.state[resident + 0x10], 0x5A)
+
+    def test_subdue_all_residents_only_changes_nonempty_equipped_residents(
+        self,
+    ) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        army_slot = document.unit_slots()[0]
+        reserve_slot = UNIT_SLOTS - 1
+        struct.pack_into("<h", document.state, RESERVE_COUNT_OFFSET, 1)
+        struct.pack_into(
+            "<I",
+            document.state,
+            ROSTER_OFFSET + reserve_slot * UNIT_SIZE + UNIT_USED_OFFSET,
+            1,
+        )
+
+        document.set_equipment(
+            army_slot, [(100, 0, 0, 0)] + [(0, 0, 0, 0)] * 4
+        )
+        document.set_residents(
+            army_slot,
+            0,
+            [(3, 28, 56, False), (64, 2, 4, True)]
+            + [(0, 0, 0, False)] * (ITEM_RESIDENT_COUNT - 2),
+        )
+        document.set_residents(
+            army_slot,
+            1,
+            [(99, 7, 9, False)]
+            + [(0, 0, 0, False)] * (ITEM_RESIDENT_COUNT - 1),
+        )
+        document.set_equipment(
+            reserve_slot, [(200, 0, 0, 0)] + [(0, 0, 0, 0)] * 4
+        )
+        document.set_residents(
+            reserve_slot,
+            0,
+            [(7, 11, 22, False)] + [(0, 0, 0, False)] * (ITEM_RESIDENT_COUNT - 1),
+        )
+        unmapped_byte = (
+            ROSTER_OFFSET
+            + reserve_slot * UNIT_SIZE
+            + EQUIPMENT_OFFSET
+            + ITEM_RESIDENT_OFFSET
+            + 0x10
+        )
+        document.state[unmapped_byte] = 0x5A
+
+        self.assertEqual(document.subdue_all_residents(), 2)
+        saved = SaveDocument.from_bytes(document.to_bytes())
+        self.assertEqual(
+            saved.resident_values(army_slot, 0)[:2],
+            [(3, 28, 56, True), (64, 2, 4, True)],
+        )
+        self.assertEqual(
+            saved.resident_values(army_slot, 0)[2], (0, 0, 0, False)
+        )
+        self.assertEqual(
+            saved.resident_values(army_slot, 1)[0], (99, 7, 9, False)
+        )
+        self.assertEqual(
+            saved.resident_values(reserve_slot, 0)[0], (7, 11, 22, True)
+        )
+        self.assertEqual(saved.state[unmapped_byte], 0x5A)
+        self.assertEqual(document.subdue_all_residents(), 0)
 
     def test_setters_reject_out_of_range_values(self) -> None:
         document = SaveDocument.from_bytes(make_save())

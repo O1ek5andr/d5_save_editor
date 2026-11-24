@@ -382,6 +382,31 @@ class SaveDocument:
             )
             self.state[resident + ITEM_RESIDENT_SUBDUED_OFFSET] = int(subdued)
 
+    def subdue_all_residents(self) -> int:
+        subdued_count = 0
+        for slot in self.unit_slots():
+            for item_index, item in enumerate(self.equipment_values(slot)):
+                if item[0] == 0:
+                    continue
+                residents = self.resident_values(slot, item_index)
+                pending = sum(
+                    1
+                    for resident_id, _, _, subdued in residents
+                    if resident_id != 0 and not subdued
+                )
+                if pending == 0:
+                    continue
+                self.set_residents(
+                    slot,
+                    item_index,
+                    [
+                        (resident_id, level, growth, subdued or resident_id != 0)
+                        for resident_id, level, growth, subdued in residents
+                    ],
+                )
+                subdued_count += pending
+        return subdued_count
+
     def _item_base(self, slot: int, item_index: int) -> int:
         self._validate_range(item_index, 0, EQUIPMENT_COUNT - 1, "Equipment slot")
         return (
