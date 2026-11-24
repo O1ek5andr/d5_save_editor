@@ -37,6 +37,8 @@ from d5_save_editor.savefile import (
     UNIT_USED_OFFSET,
     UNIT_SLOTS,
     UNIT_WEAPON_OFFSET,
+    WAREHOUSE_ITEM_COUNT,
+    WAREHOUSE_OFFSET,
     WEAPON_SIZE,
     SaveDocument,
     _decode_header,
@@ -140,7 +142,7 @@ class SaveFileTests(unittest.TestCase):
         self.assertEqual(saved.state[resident + 2], 0xA5)
         self.assertEqual(saved.state[resident + 0x10], 0x5A)
 
-    def test_subdue_all_residents_only_changes_nonempty_equipped_residents(
+    def test_subdue_all_residents_only_changes_nonempty_item_residents(
         self,
     ) -> None:
         document = SaveDocument.from_bytes(make_save())
@@ -177,6 +179,18 @@ class SaveFileTests(unittest.TestCase):
             0,
             [(7, 11, 22, False)] + [(0, 0, 0, False)] * (ITEM_RESIDENT_COUNT - 1),
         )
+        warehouse_slot = 4
+        warehouse_item = (
+            WAREHOUSE_OFFSET + warehouse_slot * EQUIPMENT_SIZE
+        )
+        struct.pack_into(
+            "<H", document.state, warehouse_item + EQUIPMENT_ID_OFFSET, 300
+        )
+        document.set_warehouse_residents(
+            warehouse_slot,
+            [(8, 14, 28, False)]
+            + [(0, 0, 0, False)] * (ITEM_RESIDENT_COUNT - 1),
+        )
         unmapped_byte = (
             ROSTER_OFFSET
             + reserve_slot * UNIT_SIZE
@@ -185,8 +199,12 @@ class SaveFileTests(unittest.TestCase):
             + 0x10
         )
         document.state[unmapped_byte] = 0x5A
+        warehouse_unmapped_byte = (
+            warehouse_item + ITEM_RESIDENT_OFFSET + 0x10
+        )
+        document.state[warehouse_unmapped_byte] = 0xA5
 
-        self.assertEqual(document.subdue_all_residents(), 2)
+        self.assertEqual(document.subdue_all_residents(), 3)
         saved = SaveDocument.from_bytes(document.to_bytes())
         self.assertEqual(
             saved.resident_values(army_slot, 0)[:2],
@@ -201,10 +219,15 @@ class SaveFileTests(unittest.TestCase):
         self.assertEqual(
             saved.resident_values(reserve_slot, 0)[0], (7, 11, 22, True)
         )
+        self.assertEqual(
+            saved.warehouse_resident_values(warehouse_slot)[0],
+            (8, 14, 28, True),
+        )
         self.assertEqual(saved.state[unmapped_byte], 0x5A)
+        self.assertEqual(saved.state[warehouse_unmapped_byte], 0xA5)
         self.assertEqual(document.subdue_all_residents(), 0)
 
-    def test_set_all_equipment_levels_for_all_units(self) -> None:
+    def test_set_all_item_levels_for_equipment_and_warehouse(self) -> None:
         document = SaveDocument.from_bytes(make_save())
         army_slot = document.unit_slots()[0]
         reserve_slot = UNIT_SLOTS - 1
@@ -223,6 +246,19 @@ class SaveFileTests(unittest.TestCase):
         document.set_equipment(
             reserve_slot, [(300, 30, 5, 6)] + [(0, 0, 0, 0)] * 4
         )
+        warehouse_slot = 5
+        warehouse_item = WAREHOUSE_OFFSET + warehouse_slot * EQUIPMENT_SIZE
+        struct.pack_into(
+            "<H", document.state, warehouse_item + EQUIPMENT_ID_OFFSET, 400
+        )
+        struct.pack_into(
+            "<H", document.state, warehouse_item + EQUIPMENT_LEVEL_COPY_OFFSET, 40
+        )
+        struct.pack_into(
+            "<H", document.state, warehouse_item + EQUIPMENT_LEVEL_OFFSET, 40
+        )
+        document.state[warehouse_item + EQUIPMENT_TYPE_OFFSET] = 7
+        document.state[warehouse_item + EQUIPMENT_RANK_OFFSET] = 8
         empty_item = (
             ROSTER_OFFSET
             + army_slot * UNIT_SIZE
@@ -237,7 +273,7 @@ class SaveFileTests(unittest.TestCase):
         )
 
         target_level = MAX_EQUIPMENT_LEVEL
-        self.assertEqual(document.set_all_equipment_levels(target_level), 3)
+        self.assertEqual(document.set_all_item_levels(target_level), 4)
         saved = SaveDocument.from_bytes(document.to_bytes())
         self.assertEqual(
             saved.equipment_values(army_slot),
@@ -246,6 +282,14 @@ class SaveFileTests(unittest.TestCase):
         )
         self.assertEqual(
             saved.equipment_values(reserve_slot)[0], (300, target_level, 5, 6)
+        )
+        self.assertEqual(
+            saved.warehouse_item_values(warehouse_slot),
+            (400, target_level, 7, 8),
+        )
+        self.assertEqual(
+            saved.warehouse_item_values(WAREHOUSE_ITEM_COUNT - 1),
+            (0, 0, 0, 0),
         )
         self.assertEqual(
             struct.unpack_from(
@@ -257,7 +301,42 @@ class SaveFileTests(unittest.TestCase):
             struct.unpack_from("<H", saved.state, empty_item + EQUIPMENT_LEVEL_OFFSET)[0],
             88,
         )
-        self.assertEqual(document.set_all_equipment_levels(target_level), 0)
+        self.assertEqual(document.set_all_item_levels(target_level), 0)
+
+    def test_warehouse_item_and_resident_edit_round_trip(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        warehouse_slot = 12
+        item_base = WAREHOUSE_OFFSET + warehouse_slot * EQUIPMENT_SIZE
+        struct.pack_into("<H", document.state, item_base + EQUIPMENT_ID_OFFSET, 424)
+        struct.pack_into(
+            "<H", document.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET, 15
+        )
+        struct.pack_into(
+            "<H", document.state, item_base + EQUIPMENT_LEVEL_OFFSET, 15
+        )
+        document.state[item_base + EQUIPMENT_TYPE_OFFSET] = 3
+        document.state[item_base + EQUIPMENT_RANK_OFFSET] = 7
+        resident_base = item_base + ITEM_RESIDENT_OFFSET
+        document.state[resident_base + 2] = 0x5A
+        values = [(3, 28, 56, False)] + [
+            (0, 0, 0, False)
+        ] * (ITEM_RESIDENT_COUNT - 1)
+        document.set_warehouse_item_level(warehouse_slot, 9999)
+        document.set_warehouse_residents(warehouse_slot, values)
+
+        saved = SaveDocument.from_bytes(document.to_bytes())
+        self.assertEqual(saved.warehouse_slots(), [warehouse_slot])
+        self.assertEqual(
+            saved.warehouse_item_values(warehouse_slot), (424, 9999, 3, 7)
+        )
+        self.assertEqual(saved.warehouse_resident_values(warehouse_slot), values)
+        self.assertEqual(saved.state[resident_base + 2], 0x5A)
+        with self.assertRaises(ValueError):
+            document.set_warehouse_item_level(WAREHOUSE_ITEM_COUNT, 1)
+        with self.assertRaises(ValueError):
+            document.set_warehouse_item_level(warehouse_slot + 1, 1)
+        with self.assertRaises(ValueError):
+            document.set_warehouse_residents(warehouse_slot + 1, values)
 
     def test_setters_reject_out_of_range_values(self) -> None:
         document = SaveDocument.from_bytes(make_save())
@@ -269,9 +348,9 @@ class SaveFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             document.set_equipment(slot, [(0, MAX_EQUIPMENT_LEVEL + 1, 0, 0)] * 5)
         with self.assertRaises(ValueError):
-            document.set_all_equipment_levels(-1)
+            document.set_all_item_levels(-1)
         with self.assertRaises(ValueError):
-            document.set_all_equipment_levels(MAX_EQUIPMENT_LEVEL + 1)
+            document.set_all_item_levels(MAX_EQUIPMENT_LEVEL + 1)
         with self.assertRaises(ValueError):
             document.set_residents(slot, 0, [(0, 0, 0, False)] * 8)
         with self.assertRaises(ValueError):

@@ -3,11 +3,13 @@ from __future__ import annotations
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Callable
 
 from .savefile import (
     EQUIPMENT_COUNT,
     ITEM_RESIDENT_COUNT,
     MAX_EQUIPMENT_LEVEL,
+    WAREHOUSE_ITEM_COUNT,
     WEAPON_COUNT,
     SaveDocument,
 )
@@ -55,6 +57,11 @@ class SaveEditor:
             top,
             text="Set all item levels...",
             command=self.set_all_item_levels,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            top,
+            text="Warehouse...",
+            command=self.open_warehouse,
         ).pack(side="left", padx=(8, 0))
         ttk.Label(top, textvariable=self.status_text).pack(side="right")
 
@@ -181,7 +188,7 @@ class SaveEditor:
             editor,
             text=(
                 "Equipment IDs are raw game IDs; changing an ID does not copy item "
-                "properties. The warehouse inventory is not edited."
+                "properties. Use Warehouse... to edit stored-item levels and residents."
             ),
             wraplength=560,
             foreground="#8a4b08",
@@ -289,14 +296,49 @@ class SaveEditor:
         selected_slot = self.selected_slot
         item_id = document.equipment_values(selected_slot)[item_index][0]
         unit_name = document.unit_info(selected_slot)["name"]
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"Residents - {unit_name} - Item {item_index + 1}")
-        dialog.transient(self.root)
+        self._edit_resident_values(
+            self.root,
+            f"Residents - {unit_name} - Item {item_index + 1}",
+            f"Item ID {item_id} - edit the nine resident slots",
+            document.resident_values(selected_slot, item_index),
+            lambda values: document.set_residents(
+                selected_slot, item_index, values
+            ),
+        )
+
+    def edit_warehouse_residents(
+        self, warehouse_slot: int, parent: tk.Misc
+    ) -> None:
+        if self.document is None:
+            return
+        document = self.document
+        item_id = document.warehouse_item_values(warehouse_slot)[0]
+        self._edit_resident_values(
+            parent,
+            f"Residents - Warehouse slot {warehouse_slot + 1}",
+            f"Item ID {item_id} - edit the nine resident slots",
+            document.warehouse_resident_values(warehouse_slot),
+            lambda values: document.set_warehouse_residents(
+                warehouse_slot, values
+            ),
+        )
+
+    def _edit_resident_values(
+        self,
+        parent: tk.Misc,
+        title: str,
+        item_description: str,
+        values: list[tuple[int, int, int, bool]],
+        apply_values: Callable[[list[tuple[int, int, int, bool]]], None],
+    ) -> None:
+        dialog = tk.Toplevel(parent)
+        dialog.title(title)
+        dialog.transient(parent)
         dialog.grab_set()
 
         ttk.Label(
             dialog,
-            text=f"Item ID {item_id} - edit the nine resident slots",
+            text=item_description,
             padding=(10, 10, 10, 6),
         ).grid(row=0, column=0, columnspan=5, sticky="w")
         headers = (
@@ -314,13 +356,11 @@ class SaveEditor:
         resident_vars: list[
             tuple[tk.StringVar, tk.StringVar, tk.StringVar, tk.BooleanVar]
         ] = []
-        for index, values in enumerate(
-            document.resident_values(selected_slot, item_index)
-        ):
-            resident_id = tk.StringVar(value=str(values[0]))
-            level = tk.StringVar(value=str(values[1]))
-            growth = tk.StringVar(value=str(values[2]))
-            subdued = tk.BooleanVar(value=values[3])
+        for index, resident_values in enumerate(values):
+            resident_id = tk.StringVar(value=str(resident_values[0]))
+            level = tk.StringVar(value=str(resident_values[1]))
+            growth = tk.StringVar(value=str(resident_values[2]))
+            subdued = tk.BooleanVar(value=resident_values[3])
             resident_vars.append((resident_id, level, growth, subdued))
             ttk.Label(dialog, text=str(index + 1)).grid(
                 row=index + 2, column=0, padx=6, pady=2, sticky="w"
@@ -360,7 +400,7 @@ class SaveEditor:
                     )
                     for resident_id, level, growth, subdued in resident_vars
                 ]
-                document.set_residents(selected_slot, item_index, values)
+                apply_values(values)
             except ValueError as error:
                 messagebox.showerror("Invalid resident values", str(error), parent=dialog)
                 return
@@ -373,6 +413,161 @@ class SaveEditor:
         ttk.Button(buttons, text="Apply", command=apply_residents).pack(
             side="right", padx=(0, 8)
         )
+        dialog.wait_window()
+
+    def open_warehouse(self) -> None:
+        if self.document is None:
+            messagebox.showinfo("No save loaded", "Open a save file first.")
+            return
+
+        try:
+            self._apply_current_unit()
+        except ValueError as error:
+            messagebox.showerror("Invalid character values", str(error))
+            return
+
+        document = self.document
+        warehouse_slots = document.warehouse_slots()
+        window = tk.Toplevel(self.root)
+        window.title(
+            f"Warehouse - {len(warehouse_slots)} / {WAREHOUSE_ITEM_COUNT} items"
+        )
+        window.transient(self.root)
+        window.minsize(820, 460)
+        window.grab_set()
+
+        search_value = tk.StringVar()
+        item_summary = tk.StringVar(value="Select an item")
+        level_value = tk.StringVar()
+        visible_slots: list[int] = []
+        selected_slot: int | None = None
+
+        ttk.Label(window, text="Search by warehouse slot or item ID").pack(
+            anchor="w", padx=10, pady=(10, 2)
+        )
+        search_entry = ttk.Entry(window, textvariable=search_value)
+        search_entry.pack(fill="x", padx=10)
+
+        content = ttk.Frame(window, padding=10)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        item_list = tk.Listbox(content, width=62, height=22, exportselection=False)
+        item_list.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            content, orient="vertical", command=item_list.yview
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        item_list.configure(yscrollcommand=scrollbar.set)
+
+        details = ttk.LabelFrame(content, text="Warehouse item", padding=10)
+        details.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        ttk.Label(details, textvariable=item_summary, wraplength=250).pack(
+            anchor="w", pady=(0, 12)
+        )
+        ttk.Label(
+            details, text=f"Level (0-{MAX_EQUIPMENT_LEVEL})"
+        ).pack(anchor="w")
+        ttk.Entry(details, textvariable=level_value, width=16).pack(
+            anchor="w", pady=(2, 10)
+        )
+
+        def refresh_list(*_args: str) -> None:
+            nonlocal selected_slot
+            previous_slot = selected_slot
+            query = search_value.get().strip().casefold()
+            item_list.delete(0, tk.END)
+            visible_slots.clear()
+
+            for slot in warehouse_slots:
+                item_id, level, item_type, rank = document.warehouse_item_values(slot)
+                resident_count = sum(
+                    1
+                    for resident in document.warehouse_resident_values(slot)
+                    if resident[0] != 0
+                )
+                row = (
+                    f"{slot + 1:04d} | ID {item_id:5d} | Lv {level:4d} | "
+                    f"Type {item_type:3d} | Rank {rank:2d} | Residents {resident_count}"
+                )
+                if query and query not in row.casefold():
+                    continue
+                visible_slots.append(slot)
+                item_list.insert(tk.END, row)
+
+            if previous_slot is not None and previous_slot in visible_slots:
+                row_index = visible_slots.index(previous_slot)
+                item_list.selection_set(row_index)
+                item_list.activate(row_index)
+                show_selected()
+            else:
+                selected_slot = None
+                item_summary.set("Select an item")
+                level_value.set("")
+
+        def show_selected(_event: tk.Event | None = None) -> None:
+            nonlocal selected_slot
+            selection = item_list.curselection()
+            if not selection:
+                return
+            selected_slot = visible_slots[selection[0]]
+            item_id, level, item_type, rank = document.warehouse_item_values(
+                selected_slot
+            )
+            item_summary.set(
+                f"Warehouse slot {selected_slot + 1}\n"
+                f"Item ID {item_id} | Type {item_type} | Rank {rank}"
+            )
+            level_value.set(str(level))
+
+        def apply_level() -> None:
+            if selected_slot is None:
+                messagebox.showinfo(
+                    "No warehouse item selected",
+                    "Select a warehouse item first.",
+                    parent=window,
+                )
+                return
+            try:
+                level = self._integer(level_value.get(), "Item level")
+                document.set_warehouse_item_level(selected_slot, level)
+            except ValueError as error:
+                messagebox.showerror(
+                    "Invalid warehouse item level", str(error), parent=window
+                )
+                return
+            self.status_text.set("Warehouse item level applied")
+            refresh_list()
+
+        def edit_selected_residents() -> None:
+            if selected_slot is None:
+                messagebox.showinfo(
+                    "No warehouse item selected",
+                    "Select a warehouse item first.",
+                    parent=window,
+                )
+                return
+            self.edit_warehouse_residents(selected_slot, window)
+            window.grab_set()
+            refresh_list()
+
+        item_list.bind("<<ListboxSelect>>", show_selected)
+        search_value.trace_add("write", refresh_list)
+        ttk.Button(details, text="Apply level", command=apply_level).pack(
+            fill="x", pady=(0, 6)
+        )
+        ttk.Button(
+            details,
+            text="Residents...",
+            command=edit_selected_residents,
+        ).pack(fill="x")
+        ttk.Label(
+            window,
+            text="Warehouse entries are editable in memory; use Save as new slot to write a copy.",
+            padding=(10, 0, 10, 10),
+        ).pack(anchor="w")
+        refresh_list()
 
     def subdue_all_residents(self) -> None:
         if self.document is None:
@@ -380,8 +575,8 @@ class SaveEditor:
             return
         if not messagebox.askyesno(
             "Subdue all residents",
-            "Mark every non-empty resident on equipped items for all army and "
-            "reserve characters as subdued? Warehouse items are not changed.",
+            "Mark every non-empty resident on equipped and warehouse items as "
+            "subdued? This includes all army and reserve characters.",
             parent=self.root,
         ):
             return
@@ -413,15 +608,15 @@ class SaveEditor:
             return
         if not messagebox.askyesno(
             "Confirm item level change",
-            f"Set every equipped item to level {level} for all army and reserve "
-            "characters? Warehouse items are not changed.",
+            f"Set every equipped and warehouse item to level {level}? This "
+            "includes all army and reserve characters.",
             parent=self.root,
         ):
             return
 
         try:
             self._apply_current_unit()
-            updated_count = self.document.set_all_equipment_levels(level)
+            updated_count = self.document.set_all_item_levels(level)
         except ValueError as error:
             messagebox.showerror(
                 "Could not set item levels", str(error), parent=self.root

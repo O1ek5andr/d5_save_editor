@@ -25,19 +25,25 @@ The first version edits:
 - Ten weapon mastery levels and aptitudes
 - The five equipped-item IDs, levels, types, and ranks for a selected character
 - A batch action to set all equipped-item levels across army and reserve
-  characters
+  characters and warehouse items
 - Nine resident slots on each equipped item, including resident ID, unsubdued
   level, maximum growth, and subdued state
 - A bulk action to subdue all non-empty residents on equipped items for every
-  army and reserve character
+  army and reserve character, including warehouse items
+- A warehouse browser for editing existing stored-item levels and residents
 
-The warehouse item list and `SystemSave.sav` are not edited. Equipment IDs are
-raw game IDs; the editor does not validate them against the game's item
-database, and changing an ID does not copy the other item's properties.
-Item levels can be set from 0 to 9999 for equipped items.
+Warehouse editing covers the 1000 item slots in the PC save. It does not add or
+remove items or edit warehouse item IDs, types, or ranks. `SystemSave.sav` is not
+edited. Equipment IDs are raw game IDs; the editor does not validate them
+against the game's item database, and changing an ID does not copy the other
+item's properties. Item levels can be set from 0 to 9999. The warehouse layout
+is reverse-engineered from PC saves and has not been validated by loading an
+edited save in-game.
+
 Click **Residents...** beside an equipped item to edit its nine resident slots.
-Resident IDs are raw game values (0 means empty); the editor preserves unmapped
-bytes in each resident record.
+In **Warehouse...**, select an item to edit its level or residents. Resident IDs
+are raw game values (0 means empty); the editor preserves unmapped bytes in
+each resident record.
 
 ## Safety
 

@@ -37,6 +37,9 @@ EQUIPMENT_LEVEL_COPY_OFFSET = 0x12C
 EQUIPMENT_LEVEL_OFFSET = 0x13E
 EQUIPMENT_TYPE_OFFSET = 0x147
 EQUIPMENT_RANK_OFFSET = 0x14C
+# The PC save stores warehouse items as a fixed array of item records.
+WAREHOUSE_OFFSET = 0x492AA0
+WAREHOUSE_ITEM_COUNT = 1000
 ITEM_RESIDENT_OFFSET = 0x04
 ITEM_RESIDENT_SIZE = 0x14
 ITEM_RESIDENT_COUNT = 9
@@ -293,18 +296,26 @@ class SaveDocument:
     def equipment_values(self, slot: int) -> list[tuple[int, int, int, int]]:
         base = self._unit_base(slot) + EQUIPMENT_OFFSET
         return [
-            (
-                struct.unpack_from(
-                    "<H", self.state, base + index * EQUIPMENT_SIZE + EQUIPMENT_ID_OFFSET
-                )[0],
-                struct.unpack_from(
-                    "<H", self.state, base + index * EQUIPMENT_SIZE + EQUIPMENT_LEVEL_OFFSET
-                )[0],
-                self.state[base + index * EQUIPMENT_SIZE + EQUIPMENT_TYPE_OFFSET],
-                self.state[base + index * EQUIPMENT_SIZE + EQUIPMENT_RANK_OFFSET],
-            )
+            self._item_values(base + index * EQUIPMENT_SIZE)
             for index in range(EQUIPMENT_COUNT)
         ]
+
+    def warehouse_slots(self) -> list[int]:
+        return [
+            slot
+            for slot in range(WAREHOUSE_ITEM_COUNT)
+            if self.warehouse_item_values(slot)[0] != 0
+        ]
+
+    def warehouse_item_values(self, slot: int) -> tuple[int, int, int, int]:
+        return self._item_values(self._warehouse_base(slot))
+
+    def set_warehouse_item_level(self, slot: int, level: int) -> None:
+        self._validate_range(level, 0, MAX_EQUIPMENT_LEVEL, "Item level")
+        item_base = self._warehouse_base(slot)
+        if self._item_values(item_base)[0] == 0:
+            raise ValueError(f"warehouse slot {slot + 1} is empty")
+        self._set_item_level(item_base, level)
 
     def set_equipment(self, slot: int, values: list[tuple[int, int, int, int]]) -> None:
         if len(values) != EQUIPMENT_COUNT:
@@ -328,33 +339,39 @@ class SaveDocument:
             self.state[item + EQUIPMENT_TYPE_OFFSET] = item_type
             self.state[item + EQUIPMENT_RANK_OFFSET] = rank
 
-    def set_all_equipment_levels(self, level: int) -> int:
+    def set_all_item_levels(self, level: int) -> int:
         self._validate_range(level, 0, MAX_EQUIPMENT_LEVEL, "Item level")
-        updates = []
+        item_bases: list[int] = []
         for slot in self.unit_slots():
             for item_index, item in enumerate(self.equipment_values(slot)):
-                if item[0] == 0:
-                    continue
-                item_base = self._item_base(slot, item_index)
-                copied_level = struct.unpack_from(
-                    "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET
-                )[0]
-                if item[1] != level or copied_level != level:
-                    updates.append(item_base)
+                if item[0] != 0:
+                    item_bases.append(self._item_base(slot, item_index))
+        item_bases.extend(self._warehouse_base(slot) for slot in self.warehouse_slots())
+
+        updates: list[int] = []
+        for item_base in item_bases:
+            visible_level = struct.unpack_from(
+                "<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET
+            )[0]
+            copied_level = struct.unpack_from(
+                "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET
+            )[0]
+            if visible_level != level or copied_level != level:
+                updates.append(item_base)
 
         for item_base in updates:
-            struct.pack_into(
-                "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET, level
-            )
-            struct.pack_into(
-                "<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET, level
-            )
+            self._set_item_level(item_base, level)
         return len(updates)
 
     def resident_values(
         self, slot: int, item_index: int
     ) -> list[tuple[int, int, int, bool]]:
-        item_base = self._item_base(slot, item_index)
+        return self._resident_values_at(self._item_base(slot, item_index))
+
+    def warehouse_resident_values(self, slot: int) -> list[tuple[int, int, int, bool]]:
+        return self._resident_values_at(self._warehouse_base(slot))
+
+    def _resident_values_at(self, item_base: int) -> list[tuple[int, int, int, bool]]:
         values = []
         for index in range(ITEM_RESIDENT_COUNT):
             resident = item_base + ITEM_RESIDENT_OFFSET + index * ITEM_RESIDENT_SIZE
@@ -380,6 +397,19 @@ class SaveDocument:
         item_index: int,
         values: list[tuple[int, int, int, bool]],
     ) -> None:
+        self._set_residents_at(self._item_base(slot, item_index), values)
+
+    def set_warehouse_residents(
+        self, slot: int, values: list[tuple[int, int, int, bool]]
+    ) -> None:
+        item_base = self._warehouse_base(slot)
+        if self._item_values(item_base)[0] == 0:
+            raise ValueError(f"warehouse slot {slot + 1} is empty")
+        self._set_residents_at(item_base, values)
+
+    def _set_residents_at(
+        self, item_base: int, values: list[tuple[int, int, int, bool]]
+    ) -> None:
         if len(values) != ITEM_RESIDENT_COUNT:
             raise ValueError(
                 f"exactly {ITEM_RESIDENT_COUNT} resident entries are required"
@@ -391,7 +421,6 @@ class SaveDocument:
             if not isinstance(subdued, bool):
                 raise ValueError("Resident subdued state must be true or false")
 
-        item_base = self._item_base(slot, item_index)
         for index, (resident_id, level, growth, subdued) in enumerate(values):
             resident = item_base + ITEM_RESIDENT_OFFSET + index * ITEM_RESIDENT_SIZE
             struct.pack_into(
@@ -406,29 +435,54 @@ class SaveDocument:
             self.state[resident + ITEM_RESIDENT_SUBDUED_OFFSET] = int(subdued)
 
     def subdue_all_residents(self) -> int:
-        subdued_count = 0
+        item_bases: list[int] = []
         for slot in self.unit_slots():
             for item_index, item in enumerate(self.equipment_values(slot)):
-                if item[0] == 0:
-                    continue
-                residents = self.resident_values(slot, item_index)
-                pending = sum(
-                    1
-                    for resident_id, _, _, subdued in residents
-                    if resident_id != 0 and not subdued
-                )
-                if pending == 0:
-                    continue
-                self.set_residents(
-                    slot,
-                    item_index,
-                    [
-                        (resident_id, level, growth, subdued or resident_id != 0)
-                        for resident_id, level, growth, subdued in residents
-                    ],
-                )
-                subdued_count += pending
+                if item[0] != 0:
+                    item_bases.append(self._item_base(slot, item_index))
+        item_bases.extend(self._warehouse_base(slot) for slot in self.warehouse_slots())
+
+        subdued_count = 0
+        for item_base in item_bases:
+            residents = self._resident_values_at(item_base)
+            pending = sum(
+                1
+                for resident_id, _, _, subdued in residents
+                if resident_id != 0 and not subdued
+            )
+            if pending == 0:
+                continue
+            self._set_residents_at(
+                item_base,
+                [
+                    (resident_id, level, growth, subdued or resident_id != 0)
+                    for resident_id, level, growth, subdued in residents
+                ],
+            )
+            subdued_count += pending
         return subdued_count
+
+    def _item_values(self, item_base: int) -> tuple[int, int, int, int]:
+        return (
+            struct.unpack_from("<H", self.state, item_base + EQUIPMENT_ID_OFFSET)[0],
+            struct.unpack_from("<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET)[0],
+            self.state[item_base + EQUIPMENT_TYPE_OFFSET],
+            self.state[item_base + EQUIPMENT_RANK_OFFSET],
+        )
+
+    def _set_item_level(self, item_base: int, level: int) -> None:
+        struct.pack_into(
+            "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET, level
+        )
+        struct.pack_into(
+            "<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET, level
+        )
+
+    def _warehouse_base(self, slot: int) -> int:
+        self._validate_range(
+            slot, 0, WAREHOUSE_ITEM_COUNT - 1, "Warehouse slot"
+        )
+        return WAREHOUSE_OFFSET + slot * EQUIPMENT_SIZE
 
     def _item_base(self, slot: int, item_index: int) -> int:
         self._validate_range(item_index, 0, EQUIPMENT_COUNT - 1, "Equipment slot")
