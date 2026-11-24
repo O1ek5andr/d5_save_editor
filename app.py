@@ -8,8 +8,8 @@ from typing import Callable
 from .savefile import (
     EQUIPMENT_COUNT,
     ITEM_RESIDENT_COUNT,
+    INNOCENCE_WAREHOUSE_COUNT,
     MAX_EQUIPMENT_LEVEL,
-    WAREHOUSE_ITEM_COUNT,
     WEAPON_COUNT,
     SaveDocument,
 )
@@ -50,18 +50,18 @@ class SaveEditor:
         )
         ttk.Button(
             top,
-            text="Subdue all residents...",
-            command=self.subdue_all_residents,
+            text="Subdue equipped residents...",
+            command=self.subdue_all_equipped_residents,
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
             top,
-            text="Set all item levels...",
-            command=self.set_all_item_levels,
+            text="Set all equipped levels...",
+            command=self.set_all_equipment_levels,
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
             top,
-            text="Warehouse...",
-            command=self.open_warehouse,
+            text="Innocence Warehouse...",
+            command=self.open_innocence_warehouse,
         ).pack(side="left", padx=(8, 0))
         ttk.Label(top, textvariable=self.status_text).pack(side="right")
 
@@ -188,7 +188,7 @@ class SaveEditor:
             editor,
             text=(
                 "Equipment IDs are raw game IDs; changing an ID does not copy item "
-                "properties. Use Warehouse... to edit stored-item levels and residents."
+                "properties. Innocence Warehouse... edits the separate stored residents."
             ),
             wraplength=560,
             foreground="#8a4b08",
@@ -306,23 +306,6 @@ class SaveEditor:
             ),
         )
 
-    def edit_warehouse_residents(
-        self, warehouse_slot: int, parent: tk.Misc
-    ) -> None:
-        if self.document is None:
-            return
-        document = self.document
-        item_id = document.warehouse_item_values(warehouse_slot)[0]
-        self._edit_resident_values(
-            parent,
-            f"Residents - Warehouse slot {warehouse_slot + 1}",
-            f"Item ID {item_id} - edit the nine resident slots",
-            document.warehouse_resident_values(warehouse_slot),
-            lambda values: document.set_warehouse_residents(
-                warehouse_slot, values
-            ),
-        )
-
     def _edit_resident_values(
         self,
         parent: tk.Misc,
@@ -415,7 +398,7 @@ class SaveEditor:
         )
         dialog.wait_window()
 
-    def open_warehouse(self) -> None:
+    def open_innocence_warehouse(self) -> None:
         if self.document is None:
             messagebox.showinfo("No save loaded", "Open a save file first.")
             return
@@ -427,49 +410,52 @@ class SaveEditor:
             return
 
         document = self.document
-        warehouse_slots = document.warehouse_slots()
+        innocence_slots = document.innocence_warehouse_slots()
         window = tk.Toplevel(self.root)
         window.title(
-            f"Warehouse - {len(warehouse_slots)} / {WAREHOUSE_ITEM_COUNT} items"
+            f"Innocence Warehouse - {len(innocence_slots)} / "
+            f"{INNOCENCE_WAREHOUSE_COUNT} entries"
         )
         window.transient(self.root)
         window.minsize(820, 460)
         window.grab_set()
 
         search_value = tk.StringVar()
-        item_summary = tk.StringVar(value="Select an item")
-        level_value = tk.StringVar()
+        entry_summary = tk.StringVar(value="Select an innocence")
+        value_value = tk.StringVar()
+        growth_value = tk.StringVar()
         visible_slots: list[int] = []
         selected_slot: int | None = None
 
-        ttk.Label(window, text="Search by warehouse slot or item ID").pack(
+        ttk.Label(window, text="Search by slot or record ID").pack(
             anchor="w", padx=10, pady=(10, 2)
         )
-        search_entry = ttk.Entry(window, textvariable=search_value)
-        search_entry.pack(fill="x", padx=10)
+        ttk.Entry(window, textvariable=search_value).pack(fill="x", padx=10)
 
         content = ttk.Frame(window, padding=10)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
         content.rowconfigure(0, weight=1)
 
-        item_list = tk.Listbox(content, width=62, height=22, exportselection=False)
-        item_list.grid(row=0, column=0, sticky="nsew")
+        entry_list = tk.Listbox(content, width=58, height=22, exportselection=False)
+        entry_list.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(
-            content, orient="vertical", command=item_list.yview
+            content, orient="vertical", command=entry_list.yview
         )
         scrollbar.grid(row=0, column=1, sticky="ns")
-        item_list.configure(yscrollcommand=scrollbar.set)
+        entry_list.configure(yscrollcommand=scrollbar.set)
 
-        details = ttk.LabelFrame(content, text="Warehouse item", padding=10)
+        details = ttk.LabelFrame(content, text="Stored innocence", padding=10)
         details.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
-        ttk.Label(details, textvariable=item_summary, wraplength=250).pack(
+        ttk.Label(details, textvariable=entry_summary, wraplength=250).pack(
             anchor="w", pady=(0, 12)
         )
-        ttk.Label(
-            details, text=f"Level (0-{MAX_EQUIPMENT_LEVEL})"
-        ).pack(anchor="w")
-        ttk.Entry(details, textvariable=level_value, width=16).pack(
+        ttk.Label(details, text="Value").pack(anchor="w")
+        ttk.Entry(details, textvariable=value_value, width=16).pack(
+            anchor="w", pady=(2, 8)
+        )
+        ttk.Label(details, text="Growth").pack(anchor="w")
+        ttk.Entry(details, textvariable=growth_value, width=16).pack(
             anchor="w", pady=(2, 10)
         )
 
@@ -477,128 +463,141 @@ class SaveEditor:
             nonlocal selected_slot
             previous_slot = selected_slot
             query = search_value.get().strip().casefold()
-            item_list.delete(0, tk.END)
+            entry_list.delete(0, tk.END)
             visible_slots.clear()
 
-            for slot in warehouse_slots:
-                item_id, level, item_type, rank = document.warehouse_item_values(slot)
-                resident_count = sum(
-                    1
-                    for resident in document.warehouse_resident_values(slot)
-                    if resident[0] != 0
+            for slot in innocence_slots:
+                record_id, value, growth, subdued = (
+                    document.innocence_warehouse_values(slot)
                 )
                 row = (
-                    f"{slot + 1:04d} | ID {item_id:5d} | Lv {level:4d} | "
-                    f"Type {item_type:3d} | Rank {rank:2d} | Residents {resident_count}"
+                    f"{slot + 1:03d} | Record {record_id:5d} | "
+                    f"Value {value:10d} | Growth {growth:10d} | "
+                    f"{'Subdued' if subdued else 'Unsubdued'}"
                 )
                 if query and query not in row.casefold():
                     continue
                 visible_slots.append(slot)
-                item_list.insert(tk.END, row)
+                entry_list.insert(tk.END, row)
 
             if previous_slot is not None and previous_slot in visible_slots:
                 row_index = visible_slots.index(previous_slot)
-                item_list.selection_set(row_index)
-                item_list.activate(row_index)
+                entry_list.selection_set(row_index)
+                entry_list.activate(row_index)
                 show_selected()
             else:
                 selected_slot = None
-                item_summary.set("Select an item")
-                level_value.set("")
+                entry_summary.set("Select an innocence")
+                value_value.set("")
+                growth_value.set("")
 
         def show_selected(_event: tk.Event | None = None) -> None:
             nonlocal selected_slot
-            selection = item_list.curselection()
+            selection = entry_list.curselection()
             if not selection:
                 return
             selected_slot = visible_slots[selection[0]]
-            item_id, level, item_type, rank = document.warehouse_item_values(
+            record_id, value, growth, _subdued = document.innocence_warehouse_values(
                 selected_slot
             )
-            item_summary.set(
-                f"Warehouse slot {selected_slot + 1}\n"
-                f"Item ID {item_id} | Type {item_type} | Rank {rank}"
+            entry_summary.set(
+                f"Warehouse slot {selected_slot + 1}\nRecord ID {record_id}"
             )
-            level_value.set(str(level))
+            value_value.set(str(value))
+            growth_value.set(str(growth))
 
-        def apply_level() -> None:
+        def apply_entry() -> None:
             if selected_slot is None:
                 messagebox.showinfo(
-                    "No warehouse item selected",
-                    "Select a warehouse item first.",
+                    "No innocence selected",
+                    "Select an innocence warehouse entry first.",
                     parent=window,
                 )
                 return
             try:
-                level = self._integer(level_value.get(), "Item level")
-                document.set_warehouse_item_level(selected_slot, level)
+                document.set_innocence_warehouse_values(
+                    selected_slot,
+                    self._integer(value_value.get(), "Innocence value"),
+                    self._integer(growth_value.get(), "Resident growth"),
+                )
             except ValueError as error:
                 messagebox.showerror(
-                    "Invalid warehouse item level", str(error), parent=window
+                    "Invalid innocence warehouse entry", str(error), parent=window
                 )
                 return
-            self.status_text.set("Warehouse item level applied")
+            self.status_text.set("Innocence warehouse entry applied")
             refresh_list()
 
-        def edit_selected_residents() -> None:
-            if selected_slot is None:
+        def subdue_all() -> None:
+            if not innocence_slots:
                 messagebox.showinfo(
-                    "No warehouse item selected",
-                    "Select a warehouse item first.",
+                    "No innocences found",
+                    "There are no active Innocence Warehouse entries.",
                     parent=window,
                 )
                 return
-            self.edit_warehouse_residents(selected_slot, window)
-            window.grab_set()
+            if not messagebox.askyesno(
+                "Subdue all Innocence Warehouse entries",
+                f"Mark all {len(innocence_slots)} active entries as subdued? "
+                "The subdued flag mapping is inferred.",
+                parent=window,
+            ):
+                return
+            subdued_count = document.subdue_all_innocence_warehouse()
+            self.status_text.set(
+                f"Innocence Warehouse entries subdued: {subdued_count}"
+            )
             refresh_list()
 
-        item_list.bind("<<ListboxSelect>>", show_selected)
+        entry_list.bind("<<ListboxSelect>>", show_selected)
         search_value.trace_add("write", refresh_list)
-        ttk.Button(details, text="Apply level", command=apply_level).pack(
+        ttk.Button(details, text="Apply values", command=apply_entry).pack(
             fill="x", pady=(0, 6)
         )
-        ttk.Button(
-            details,
-            text="Residents...",
-            command=edit_selected_residents,
-        ).pack(fill="x")
+        ttk.Button(details, text="Subdue all...", command=subdue_all).pack(fill="x")
         ttk.Label(
             window,
-            text="Warehouse entries are editable in memory; use Save as new slot to write a copy.",
+            text=(
+                "Only value/growth fields are editable; other bytes are preserved. "
+                "Subdued status is inferred; maximize power is unavailable until "
+                "type-specific caps are mapped."
+            ),
             padding=(10, 0, 10, 10),
         ).pack(anchor="w")
         refresh_list()
 
-    def subdue_all_residents(self) -> None:
+    def subdue_all_equipped_residents(self) -> None:
         if self.document is None:
             messagebox.showinfo("No save loaded", "Open a save file first.")
             return
         if not messagebox.askyesno(
             "Subdue all residents",
-            "Mark every non-empty resident on equipped and warehouse items as "
-            "subdued? This includes all army and reserve characters.",
+            "Mark every non-empty resident on equipped items as subdued? "
+            "This includes all army and reserve characters.",
             parent=self.root,
         ):
             return
 
         try:
             self._apply_current_unit()
-            subdued_count = self.document.subdue_all_residents()
+            subdued_count = self.document.subdue_all_equipped_residents()
         except ValueError as error:
             messagebox.showerror(
                 "Could not subdue residents", str(error), parent=self.root
             )
             return
 
-        self.status_text.set(f"Residents subdued: {subdued_count}")
+        self.status_text.set(
+            f"Equipped-item residents subdued: {subdued_count}"
+        )
 
-    def set_all_item_levels(self) -> None:
+    def set_all_equipment_levels(self) -> None:
         if self.document is None:
             messagebox.showinfo("No save loaded", "Open a save file first.")
             return
 
         level = simpledialog.askinteger(
-            "Set all item levels",
+            "Set all equipped item levels",
             f"New level (0-{MAX_EQUIPMENT_LEVEL}):",
             minvalue=0,
             maxvalue=MAX_EQUIPMENT_LEVEL,
@@ -608,22 +607,22 @@ class SaveEditor:
             return
         if not messagebox.askyesno(
             "Confirm item level change",
-            f"Set every equipped and warehouse item to level {level}? This "
-            "includes all army and reserve characters.",
+            f"Set every equipped item to level {level}? This includes all "
+            "army and reserve characters.",
             parent=self.root,
         ):
             return
 
         try:
             self._apply_current_unit()
-            updated_count = self.document.set_all_item_levels(level)
+            updated_count = self.document.set_all_equipment_levels(level)
         except ValueError as error:
             messagebox.showerror(
                 "Could not set item levels", str(error), parent=self.root
             )
             return
 
-        self.status_text.set(f"Item levels updated: {updated_count}")
+        self.status_text.set(f"Equipped item levels updated: {updated_count}")
 
     def _apply_current_unit(self) -> None:
         if self.document is None or self.selected_slot is None:

@@ -6,7 +6,8 @@ standard library.
 
 ## Run
 
-From the repository root:
+From the directory containing the checkout folder (for this workspace,
+`D:\Projects`):
 
 ```powershell
 python -m d5_save_editor.app
@@ -24,26 +25,29 @@ The first version edits:
 - Character level and Mana
 - Ten weapon mastery levels and aptitudes
 - The five equipped-item IDs, levels, types, and ranks for a selected character
-- A batch action to set all equipped-item levels across army and reserve
-  characters and warehouse items
+- A batch action to set equipped-item levels across army and reserve characters
 - Nine resident slots on each equipped item, including resident ID, unsubdued
   level, maximum growth, and subdued state
 - A bulk action to subdue all non-empty residents on equipped items for every
-  army and reserve character, including warehouse items
-- A warehouse browser for editing existing stored-item levels and residents
+  army and reserve character
+- A separate Innocence Warehouse browser for editing existing value/growth
+  fields, plus a bulk subdued action
 
-Warehouse editing covers the 1000 item slots in the PC save. It does not add or
-remove items or edit warehouse item IDs, types, or ranks. `SystemSave.sav` is not
-edited. Equipment IDs are raw game IDs; the editor does not validate them
-against the game's item database, and changing an ID does not copy the other
-item's properties. Item levels can be set from 0 to 9999. The warehouse layout
-is reverse-engineered from PC saves and has not been validated by loading an
-edited save in-game.
+The editor only modifies equipped items; it does not expose a separate item
+warehouse. The Innocence Warehouse editor covers its 256-record table and only
+changes existing entries; it does not add or remove entries, and it preserves
+unmapped bytes in each record. The subdued flag is inferred from PC saves and
+still needs in-game validation. Power maximization is not available because
+the record IDs have not been mapped reliably to the game's type-specific caps.
+`SystemSave.sav` is not edited. Equipment IDs are raw game IDs; the editor does
+not validate them against the game's item database, and changing an ID does not
+copy the other item's properties. Item levels can be set from 0 to 9999. The
 
 Click **Residents...** beside an equipped item to edit its nine resident slots.
-In **Warehouse...**, select an item to edit its level or residents. Resident IDs
-are raw game values (0 means empty); the editor preserves unmapped bytes in
-each resident record.
+Resident IDs are raw game values (0 means empty); the editor preserves unmapped
+bytes in each resident record. Use **Innocence Warehouse...** for the separate
+stored innocence entries; these are not residents attached to equipped items.
+Its **Subdue all...** action sets the inferred subdued flag on active entries.
 
 ## Safety
 
@@ -56,7 +60,7 @@ Keep a separate backup of your saves before using any editor.
 
 ## Verify
 
-Run the focused tests from the repository root:
+Run the focused tests from the directory containing the checkout folder:
 
 ```powershell
 python -m unittest discover -s .\d5_save_editor\tests

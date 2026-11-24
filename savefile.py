@@ -37,9 +37,6 @@ EQUIPMENT_LEVEL_COPY_OFFSET = 0x12C
 EQUIPMENT_LEVEL_OFFSET = 0x13E
 EQUIPMENT_TYPE_OFFSET = 0x147
 EQUIPMENT_RANK_OFFSET = 0x14C
-# The PC save stores warehouse items as a fixed array of item records.
-WAREHOUSE_OFFSET = 0x492AA0
-WAREHOUSE_ITEM_COUNT = 1000
 ITEM_RESIDENT_OFFSET = 0x04
 ITEM_RESIDENT_SIZE = 0x14
 ITEM_RESIDENT_COUNT = 9
@@ -47,6 +44,12 @@ ITEM_RESIDENT_ID_OFFSET = 0x00
 ITEM_RESIDENT_LEVEL_OFFSET = 0x04
 ITEM_RESIDENT_GROWTH_OFFSET = 0x08
 ITEM_RESIDENT_SUBDUED_OFFSET = 0x13
+INNOCENCE_WAREHOUSE_OFFSET = 0x87A3E8
+INNOCENCE_WAREHOUSE_COUNT = 256
+INNOCENCE_WAREHOUSE_ENTRY_SIZE = 0x14
+INNOCENCE_WAREHOUSE_SUBDUED_OFFSET = 0x03
+INNOCENCE_WAREHOUSE_VALUE_OFFSET = 0x04
+INNOCENCE_WAREHOUSE_GROWTH_OFFSET = 0x08
 
 MAX_HL = 0x7FFFFFFFFFFFFFFF
 MAX_ITEM_POINTS = 0xFFFFFFFF
@@ -300,22 +303,50 @@ class SaveDocument:
             for index in range(EQUIPMENT_COUNT)
         ]
 
-    def warehouse_slots(self) -> list[int]:
+    def innocence_warehouse_slots(self) -> list[int]:
         return [
             slot
-            for slot in range(WAREHOUSE_ITEM_COUNT)
-            if self.warehouse_item_values(slot)[0] != 0
+            for slot in range(INNOCENCE_WAREHOUSE_COUNT)
+            if self.innocence_warehouse_values(slot)[0] != 0
         ]
 
-    def warehouse_item_values(self, slot: int) -> tuple[int, int, int, int]:
-        return self._item_values(self._warehouse_base(slot))
+    def innocence_warehouse_values(self, slot: int) -> tuple[int, int, int, bool]:
+        base = self._innocence_warehouse_base(slot)
+        return (
+            struct.unpack_from("<H", self.state, base)[0],
+            struct.unpack_from(
+                "<I", self.state, base + INNOCENCE_WAREHOUSE_VALUE_OFFSET
+            )[0],
+            struct.unpack_from(
+                "<I", self.state, base + INNOCENCE_WAREHOUSE_GROWTH_OFFSET
+            )[0],
+            bool(self.state[base + INNOCENCE_WAREHOUSE_SUBDUED_OFFSET]),
+        )
 
-    def set_warehouse_item_level(self, slot: int, level: int) -> None:
-        self._validate_range(level, 0, MAX_EQUIPMENT_LEVEL, "Item level")
-        item_base = self._warehouse_base(slot)
-        if self._item_values(item_base)[0] == 0:
-            raise ValueError(f"warehouse slot {slot + 1} is empty")
-        self._set_item_level(item_base, level)
+    def set_innocence_warehouse_values(
+        self, slot: int, value: int, growth: int
+    ) -> None:
+        base = self._innocence_warehouse_base(slot)
+        if self.innocence_warehouse_values(slot)[0] == 0:
+            raise ValueError(f"innocence warehouse slot {slot + 1} is empty")
+        self._validate_range(value, 0, 0xFFFFFFFF, "Innocence value")
+        self._validate_range(growth, 0, 0xFFFFFFFF, "Resident growth")
+        struct.pack_into(
+            "<I", self.state, base + INNOCENCE_WAREHOUSE_VALUE_OFFSET, value
+        )
+        struct.pack_into(
+            "<I", self.state, base + INNOCENCE_WAREHOUSE_GROWTH_OFFSET, growth
+        )
+
+    def subdue_all_innocence_warehouse(self) -> int:
+        subdued_count = 0
+        for slot in self.innocence_warehouse_slots():
+            base = self._innocence_warehouse_base(slot)
+            flag = base + INNOCENCE_WAREHOUSE_SUBDUED_OFFSET
+            if not self.state[flag]:
+                self.state[flag] = 1
+                subdued_count += 1
+        return subdued_count
 
     def set_equipment(self, slot: int, values: list[tuple[int, int, int, int]]) -> None:
         if len(values) != EQUIPMENT_COUNT:
@@ -339,14 +370,13 @@ class SaveDocument:
             self.state[item + EQUIPMENT_TYPE_OFFSET] = item_type
             self.state[item + EQUIPMENT_RANK_OFFSET] = rank
 
-    def set_all_item_levels(self, level: int) -> int:
+    def set_all_equipment_levels(self, level: int) -> int:
         self._validate_range(level, 0, MAX_EQUIPMENT_LEVEL, "Item level")
         item_bases: list[int] = []
         for slot in self.unit_slots():
             for item_index, item in enumerate(self.equipment_values(slot)):
                 if item[0] != 0:
                     item_bases.append(self._item_base(slot, item_index))
-        item_bases.extend(self._warehouse_base(slot) for slot in self.warehouse_slots())
 
         updates: list[int] = []
         for item_base in item_bases:
@@ -367,9 +397,6 @@ class SaveDocument:
         self, slot: int, item_index: int
     ) -> list[tuple[int, int, int, bool]]:
         return self._resident_values_at(self._item_base(slot, item_index))
-
-    def warehouse_resident_values(self, slot: int) -> list[tuple[int, int, int, bool]]:
-        return self._resident_values_at(self._warehouse_base(slot))
 
     def _resident_values_at(self, item_base: int) -> list[tuple[int, int, int, bool]]:
         values = []
@@ -399,14 +426,6 @@ class SaveDocument:
     ) -> None:
         self._set_residents_at(self._item_base(slot, item_index), values)
 
-    def set_warehouse_residents(
-        self, slot: int, values: list[tuple[int, int, int, bool]]
-    ) -> None:
-        item_base = self._warehouse_base(slot)
-        if self._item_values(item_base)[0] == 0:
-            raise ValueError(f"warehouse slot {slot + 1} is empty")
-        self._set_residents_at(item_base, values)
-
     def _set_residents_at(
         self, item_base: int, values: list[tuple[int, int, int, bool]]
     ) -> None:
@@ -434,14 +453,12 @@ class SaveDocument:
             )
             self.state[resident + ITEM_RESIDENT_SUBDUED_OFFSET] = int(subdued)
 
-    def subdue_all_residents(self) -> int:
+    def subdue_all_equipped_residents(self) -> int:
         item_bases: list[int] = []
         for slot in self.unit_slots():
             for item_index, item in enumerate(self.equipment_values(slot)):
                 if item[0] != 0:
                     item_bases.append(self._item_base(slot, item_index))
-        item_bases.extend(self._warehouse_base(slot) for slot in self.warehouse_slots())
-
         subdued_count = 0
         for item_base in item_bases:
             residents = self._resident_values_at(item_base)
@@ -478,11 +495,11 @@ class SaveDocument:
             "<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET, level
         )
 
-    def _warehouse_base(self, slot: int) -> int:
+    def _innocence_warehouse_base(self, slot: int) -> int:
         self._validate_range(
-            slot, 0, WAREHOUSE_ITEM_COUNT - 1, "Warehouse slot"
+            slot, 0, INNOCENCE_WAREHOUSE_COUNT - 1, "Innocence warehouse slot"
         )
-        return WAREHOUSE_OFFSET + slot * EQUIPMENT_SIZE
+        return INNOCENCE_WAREHOUSE_OFFSET + slot * INNOCENCE_WAREHOUSE_ENTRY_SIZE
 
     def _item_base(self, slot: int, item_index: int) -> int:
         self._validate_range(item_index, 0, EQUIPMENT_COUNT - 1, "Equipment slot")
