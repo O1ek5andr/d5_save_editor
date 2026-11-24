@@ -24,6 +24,8 @@ The first version edits:
 - Character level and Mana
 - Ten weapon mastery levels and aptitudes
 - The five equipped-item IDs, levels, types, and ranks for a selected character
+- A batch action to set all equipped-item levels across army and reserve
+  characters
 - Nine resident slots on each equipped item, including resident ID, unsubdued
   level, maximum growth, and subdued state
 - A bulk action to subdue all non-empty residents on equipped items for every

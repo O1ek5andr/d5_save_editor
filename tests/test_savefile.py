@@ -204,6 +204,61 @@ class SaveFileTests(unittest.TestCase):
         self.assertEqual(saved.state[unmapped_byte], 0x5A)
         self.assertEqual(document.subdue_all_residents(), 0)
 
+    def test_set_all_equipment_levels_for_all_units(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        army_slot = document.unit_slots()[0]
+        reserve_slot = UNIT_SLOTS - 1
+        struct.pack_into("<h", document.state, RESERVE_COUNT_OFFSET, 1)
+        struct.pack_into(
+            "<I",
+            document.state,
+            ROSTER_OFFSET + reserve_slot * UNIT_SIZE + UNIT_USED_OFFSET,
+            1,
+        )
+
+        document.set_equipment(
+            army_slot,
+            [(100, 10, 1, 2), (200, 20, 3, 4)] + [(0, 0, 0, 0)] * 3,
+        )
+        document.set_equipment(
+            reserve_slot, [(300, 30, 5, 6)] + [(0, 0, 0, 0)] * 4
+        )
+        empty_item = (
+            ROSTER_OFFSET
+            + army_slot * UNIT_SIZE
+            + EQUIPMENT_OFFSET
+            + 2 * EQUIPMENT_SIZE
+        )
+        struct.pack_into(
+            "<H", document.state, empty_item + EQUIPMENT_LEVEL_COPY_OFFSET, 77
+        )
+        struct.pack_into(
+            "<H", document.state, empty_item + EQUIPMENT_LEVEL_OFFSET, 88
+        )
+
+        target_level = MAX_EQUIPMENT_LEVEL
+        self.assertEqual(document.set_all_equipment_levels(target_level), 3)
+        saved = SaveDocument.from_bytes(document.to_bytes())
+        self.assertEqual(
+            saved.equipment_values(army_slot),
+            [(100, target_level, 1, 2), (200, target_level, 3, 4)]
+            + [(0, 88, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0)],
+        )
+        self.assertEqual(
+            saved.equipment_values(reserve_slot)[0], (300, target_level, 5, 6)
+        )
+        self.assertEqual(
+            struct.unpack_from(
+                "<H", saved.state, empty_item + EQUIPMENT_LEVEL_COPY_OFFSET
+            )[0],
+            77,
+        )
+        self.assertEqual(
+            struct.unpack_from("<H", saved.state, empty_item + EQUIPMENT_LEVEL_OFFSET)[0],
+            88,
+        )
+        self.assertEqual(document.set_all_equipment_levels(target_level), 0)
+
     def test_setters_reject_out_of_range_values(self) -> None:
         document = SaveDocument.from_bytes(make_save())
         with self.assertRaises(ValueError):
@@ -213,6 +268,10 @@ class SaveFileTests(unittest.TestCase):
         slot = document.unit_slots()[0]
         with self.assertRaises(ValueError):
             document.set_equipment(slot, [(0, MAX_EQUIPMENT_LEVEL + 1, 0, 0)] * 5)
+        with self.assertRaises(ValueError):
+            document.set_all_equipment_levels(-1)
+        with self.assertRaises(ValueError):
+            document.set_all_equipment_levels(MAX_EQUIPMENT_LEVEL + 1)
         with self.assertRaises(ValueError):
             document.set_residents(slot, 0, [(0, 0, 0, False)] * 8)
         with self.assertRaises(ValueError):

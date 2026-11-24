@@ -328,6 +328,29 @@ class SaveDocument:
             self.state[item + EQUIPMENT_TYPE_OFFSET] = item_type
             self.state[item + EQUIPMENT_RANK_OFFSET] = rank
 
+    def set_all_equipment_levels(self, level: int) -> int:
+        self._validate_range(level, 0, MAX_EQUIPMENT_LEVEL, "Item level")
+        updates = []
+        for slot in self.unit_slots():
+            for item_index, item in enumerate(self.equipment_values(slot)):
+                if item[0] == 0:
+                    continue
+                item_base = self._item_base(slot, item_index)
+                copied_level = struct.unpack_from(
+                    "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET
+                )[0]
+                if item[1] != level or copied_level != level:
+                    updates.append(item_base)
+
+        for item_base in updates:
+            struct.pack_into(
+                "<H", self.state, item_base + EQUIPMENT_LEVEL_COPY_OFFSET, level
+            )
+            struct.pack_into(
+                "<H", self.state, item_base + EQUIPMENT_LEVEL_OFFSET, level
+            )
+        return len(updates)
+
     def resident_values(
         self, slot: int, item_index: int
     ) -> list[tuple[int, int, int, bool]]:

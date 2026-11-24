@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .savefile import (
     EQUIPMENT_COUNT,
     ITEM_RESIDENT_COUNT,
+    MAX_EQUIPMENT_LEVEL,
     WEAPON_COUNT,
     SaveDocument,
 )
@@ -49,6 +50,11 @@ class SaveEditor:
             top,
             text="Subdue all residents...",
             command=self.subdue_all_residents,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            top,
+            text="Set all item levels...",
+            command=self.set_all_item_levels,
         ).pack(side="left", padx=(8, 0))
         ttk.Label(top, textvariable=self.status_text).pack(side="right")
 
@@ -390,6 +396,39 @@ class SaveEditor:
             return
 
         self.status_text.set(f"Residents subdued: {subdued_count}")
+
+    def set_all_item_levels(self) -> None:
+        if self.document is None:
+            messagebox.showinfo("No save loaded", "Open a save file first.")
+            return
+
+        level = simpledialog.askinteger(
+            "Set all item levels",
+            f"New level (0-{MAX_EQUIPMENT_LEVEL}):",
+            minvalue=0,
+            maxvalue=MAX_EQUIPMENT_LEVEL,
+            parent=self.root,
+        )
+        if level is None:
+            return
+        if not messagebox.askyesno(
+            "Confirm item level change",
+            f"Set every equipped item to level {level} for all army and reserve "
+            "characters? Warehouse items are not changed.",
+            parent=self.root,
+        ):
+            return
+
+        try:
+            self._apply_current_unit()
+            updated_count = self.document.set_all_equipment_levels(level)
+        except ValueError as error:
+            messagebox.showerror(
+                "Could not set item levels", str(error), parent=self.root
+            )
+            return
+
+        self.status_text.set(f"Item levels updated: {updated_count}")
 
     def _apply_current_unit(self) -> None:
         if self.document is None or self.selected_slot is None:
