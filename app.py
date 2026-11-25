@@ -10,6 +10,7 @@ from .savefile import (
     ITEM_RESIDENT_COUNT,
     INNOCENCE_WAREHOUSE_COUNT,
     MAX_EQUIPMENT_LEVEL,
+    MAX_LEVEL,
     WEAPON_COUNT,
     SaveDocument,
 )
@@ -60,6 +61,11 @@ class SaveEditor:
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
             top,
+            text="Set all character levels...",
+            command=self.set_all_character_levels,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            top,
             text="Innocence Warehouse...",
             command=self.open_innocence_warehouse,
         ).pack(side="left", padx=(8, 0))
@@ -80,17 +86,12 @@ class SaveEditor:
         ttk.Entry(resources, textvariable=self.hl_value, width=22).grid(
             row=0, column=1, padx=(6, 14)
         )
-        ttk.Button(
-            resources,
-            text="Set 999,999,999",
-            command=lambda: self.hl_value.set("999999999"),
-        ).grid(row=0, column=2, padx=(0, 14))
-        ttk.Label(resources, text="Item Points").grid(row=0, column=3, sticky="w")
+        ttk.Label(resources, text="Item Points").grid(row=0, column=2, sticky="w")
         ttk.Entry(resources, textvariable=self.item_points_value, width=14).grid(
-            row=0, column=4, padx=6
+            row=0, column=3, padx=6
         )
         ttk.Button(resources, text="Apply", command=self.apply_resources).grid(
-            row=0, column=5, padx=(8, 0)
+            row=0, column=4, padx=(8, 0)
         )
 
         body = ttk.Frame(self.root, padding=(10, 0, 10, 8))
@@ -271,6 +272,20 @@ class SaveEditor:
             variables[1].set(str(values[1]))
             variables[2].set(str(values[2]))
             variables[3].set(str(values[3]))
+
+    def _refresh_unit_list(self) -> None:
+        if self.document is None:
+            return
+        selected_indices = self.unit_list.curselection()
+        self.unit_list.delete(0, tk.END)
+        for slot in self.unit_slots:
+            info = self.document.unit_info(slot)
+            self.unit_list.insert(
+                tk.END,
+                f"{slot + 1:03}  {info['name']}  Lv {info['level']}",
+            )
+        for selected_index in selected_indices:
+            self.unit_list.selection_set(selected_index)
 
     def apply_resources(self) -> None:
         if self.document is None:
@@ -460,7 +475,12 @@ class SaveEditor:
         )
 
         def refresh_list(*_args: str) -> None:
-            nonlocal selected_slot
+            nonlocal innocence_slots, selected_slot
+            innocence_slots = document.innocence_warehouse_slots()
+            window.title(
+                f"Innocence Warehouse - {len(innocence_slots)} / "
+                f"{INNOCENCE_WAREHOUSE_COUNT} entries"
+            )
             previous_slot = selected_slot
             query = search_value.get().strip().casefold()
             entry_list.delete(0, tk.END)
@@ -538,15 +558,71 @@ class SaveEditor:
                 return
             if not messagebox.askyesno(
                 "Subdue all Innocence Warehouse entries",
-                f"Mark all {len(innocence_slots)} active entries as subdued? "
-                "The subdued flag mapping is inferred.",
+                f"Mark eligible entries as subdued? Unique Innocents "
+                "(IDs 202-252 with value 1) are left unchanged.",
                 parent=window,
             ):
                 return
             subdued_count = document.subdue_all_innocence_warehouse()
             self.status_text.set(
-                f"Innocence Warehouse entries subdued: {subdued_count}"
+                f"Eligible Innocence Warehouse entries subdued: {subdued_count}"
             )
+            refresh_list()
+
+        def move_all_residents() -> None:
+            if not messagebox.askyesno(
+                "Move all item residents",
+                "Move every non-empty resident from equipped items and "
+                "unequipped items in the saved item list into free Innocence "
+                "Warehouse slots? Equipped residents are moved first. Hostage "
+                "Negotiators and other Unique Innocents (IDs 202-252 with "
+                "value 1) "
+                "remain on their items, and any "
+                "eligible residents that do not fit also remain there. One "
+                "warehouse slot stays empty until full-capacity behavior is "
+                "confirmed safe in-game. The "
+                "save file will not be overwritten.",
+                parent=window,
+            ):
+                return
+            try:
+                self._apply_current_unit()
+                moved_count, remaining_count, protected_count = (
+                    document.move_all_residents_to_innocence_warehouse()
+                )
+            except ValueError as error:
+                messagebox.showerror(
+                    "Could not move residents", str(error), parent=window
+                )
+                return
+            if moved_count == 0 and remaining_count == 0 and protected_count == 0:
+                messagebox.showinfo(
+                    "No residents to move",
+                    "No non-empty residents were found on saved items.",
+                    parent=window,
+                )
+                return
+            self.status_text.set(
+                f"Residents moved: {moved_count}; remaining on items: "
+                f"{remaining_count}; protected special residents left on items: "
+                f"{protected_count}"
+            )
+            if remaining_count:
+                messagebox.showwarning(
+                    "Innocence Warehouse transfer limit reached",
+                    f"Moved {moved_count} residents. "
+                    f"{remaining_count} remain on their items because there "
+                    "were not enough transfer slots; one warehouse slot is "
+                    f"reserved. {protected_count} Unique Innocents were left "
+                    "on their items.",
+                    parent=window,
+                )
+            elif protected_count:
+                messagebox.showinfo(
+                    "Special residents left on items",
+                    f"{protected_count} Unique Innocents were not moved.",
+                    parent=window,
+                )
             refresh_list()
 
         entry_list.bind("<<ListboxSelect>>", show_selected)
@@ -554,12 +630,16 @@ class SaveEditor:
         ttk.Button(details, text="Apply values", command=apply_entry).pack(
             fill="x", pady=(0, 6)
         )
+        ttk.Button(
+            details, text="Move all residents...", command=move_all_residents
+        ).pack(fill="x", pady=(0, 6))
         ttk.Button(details, text="Subdue all...", command=subdue_all).pack(fill="x")
         ttk.Label(
             window,
             text=(
                 "Only value/growth fields are editable; other bytes are preserved. "
-                "Subdued status is inferred; maximize power is unavailable until "
+                "Subdued status uses the item-resident flag; maximize power is "
+                "unavailable until "
                 "type-specific caps are mapped."
             ),
             padding=(10, 0, 10, 10),
@@ -623,6 +703,43 @@ class SaveEditor:
             return
 
         self.status_text.set(f"Equipped item levels updated: {updated_count}")
+        if self.selected_slot is not None:
+            self._show_unit(self.selected_slot)
+
+    def set_all_character_levels(self) -> None:
+        if self.document is None:
+            messagebox.showinfo("No save loaded", "Open a save file first.")
+            return
+
+        level = simpledialog.askinteger(
+            "Set all character levels",
+            f"New level (1-{MAX_LEVEL}):",
+            minvalue=1,
+            maxvalue=MAX_LEVEL,
+            parent=self.root,
+        )
+        if level is None:
+            return
+        if not messagebox.askyesno(
+            "Confirm character level change",
+            f"Set every army and reserve character to level {level}?",
+            parent=self.root,
+        ):
+            return
+
+        try:
+            self._apply_current_unit()
+            updated_count = self.document.set_all_unit_levels(level)
+        except ValueError as error:
+            messagebox.showerror(
+                "Could not set character levels", str(error), parent=self.root
+            )
+            return
+
+        self._refresh_unit_list()
+        if self.selected_slot is not None:
+            self._show_unit(self.selected_slot)
+        self.status_text.set(f"Character levels updated: {updated_count}")
 
     def _apply_current_unit(self) -> None:
         if self.document is None or self.selected_slot is None:

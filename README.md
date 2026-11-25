@@ -23,22 +23,35 @@ The first version edits:
 
 - HL (64-bit) and Item Points
 - Character level and Mana
+- A batch action to set levels for all army and reserve characters
 - Ten weapon mastery levels and aptitudes
 - The five equipped-item IDs, levels, types, and ranks for a selected character
 - A batch action to set equipped-item levels across army and reserve characters
 - Nine resident slots on each equipped item, including resident ID, unsubdued
   level, maximum growth, and subdued state
+- A batch action to move all non-empty residents from equipped and unequipped
+  saved items into free Innocence Warehouse slots, leaving one slot empty
 - A bulk action to subdue all non-empty residents on equipped items for every
   army and reserve character
 - A separate Innocence Warehouse browser for editing existing value/growth
   fields, plus a bulk subdued action
 
-The editor only modifies equipped items; it does not expose a separate item
-warehouse. The Innocence Warehouse editor covers its 256-record table and only
-changes existing entries; it does not add or remove entries, and it preserves
-unmapped bytes in each record. The subdued flag is inferred from PC saves and
-still needs in-game validation. Power maximization is not available because
-the record IDs have not been mapped reliably to the game's type-specific caps.
+The editor exposes direct resident editing for equipped items and can move
+residents from equipped and unequipped saved items, but it does not expose a
+separate item warehouse editor. The Innocence Warehouse browser covers its
+256-record table, edits value/growth fields, and preserves unmapped bytes; the
+batch transfer currently reserves one slot pending in-game validation of full
+capacity.
+If there are more residents than transfer slots, it moves equipped residents
+first, then moves what fits from unequipped items and leaves the rest on their
+items. Warehouse subduing uses the item-resident flag at byte `+0x13`; the
+earlier `+0x03` mapping caused a crash when applied to all entries. The
+corrected mapping still needs in-game validation. Unique Innocents (IDs 202
+through 252 with value 1) are protected from transfer and bulk subduing; the
+green Hostage Negotiator in the supplied screenshot maps to ID 229. Ordinary
+Innocents can also have value 1, so the ID range is checked too. Power
+maximization is not available because the record IDs have not been mapped
+reliably to the game's type-specific caps.
 `SystemSave.sav` is not edited. Equipment IDs are raw game IDs; the editor does
 not validate them against the game's item database, and changing an ID does not
 copy the other item's properties. Item levels can be set from 0 to 9999. The
@@ -47,7 +60,8 @@ Click **Residents...** beside an equipped item to edit its nine resident slots.
 Resident IDs are raw game values (0 means empty); the editor preserves unmapped
 bytes in each resident record. Use **Innocence Warehouse...** for the separate
 stored innocence entries; these are not residents attached to equipped items.
-Its **Subdue all...** action sets the inferred subdued flag on active entries.
+Its **Subdue all...** action sets the subdued flag on eligible active entries,
+leaving Unique Innocents unchanged.
 
 ## Safety
 

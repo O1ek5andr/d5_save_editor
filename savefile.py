@@ -32,6 +32,8 @@ WEAPON_SIZE = 8
 EQUIPMENT_OFFSET = 0x10
 EQUIPMENT_SIZE = 0x258
 EQUIPMENT_COUNT = 5
+ITEM_STORAGE_OFFSET = 0x4865C0
+ITEM_STORAGE_MAX_COUNT = (ARMY_COUNT_OFFSET - ITEM_STORAGE_OFFSET) // EQUIPMENT_SIZE
 EQUIPMENT_ID_OFFSET = 0x128
 EQUIPMENT_LEVEL_COPY_OFFSET = 0x12C
 EQUIPMENT_LEVEL_OFFSET = 0x13E
@@ -44,12 +46,15 @@ ITEM_RESIDENT_ID_OFFSET = 0x00
 ITEM_RESIDENT_LEVEL_OFFSET = 0x04
 ITEM_RESIDENT_GROWTH_OFFSET = 0x08
 ITEM_RESIDENT_SUBDUED_OFFSET = 0x13
-INNOCENCE_WAREHOUSE_OFFSET = 0x87A3E8
+INNOCENCE_WAREHOUSE_OFFSET = 0x87A3EC
 INNOCENCE_WAREHOUSE_COUNT = 256
+INNOCENCE_WAREHOUSE_TRANSFER_CAPACITY = INNOCENCE_WAREHOUSE_COUNT - 1
 INNOCENCE_WAREHOUSE_ENTRY_SIZE = 0x14
-INNOCENCE_WAREHOUSE_SUBDUED_OFFSET = 0x03
+INNOCENCE_WAREHOUSE_SUBDUED_OFFSET = ITEM_RESIDENT_SUBDUED_OFFSET
 INNOCENCE_WAREHOUSE_VALUE_OFFSET = 0x04
 INNOCENCE_WAREHOUSE_GROWTH_OFFSET = 0x08
+UNIQUE_RESIDENT_ID_MIN = 0xCA
+UNIQUE_RESIDENT_ID_MAX = 0xFC
 
 MAX_HL = 0x7FFFFFFFFFFFFFFF
 MAX_ITEM_POINTS = 0xFFFFFFFF
@@ -169,6 +174,13 @@ def _compress_ykcmp(data: bytes) -> bytes:
 
 def _text(data: bytes) -> str:
     return data.split(b"\0", 1)[0].decode("utf-8", errors="replace")
+
+
+def _is_unique_innocent(resident_id: int, value: int) -> bool:
+    return (
+        UNIQUE_RESIDENT_ID_MIN <= resident_id <= UNIQUE_RESIDENT_ID_MAX
+        and value == 1
+    )
 
 
 @dataclass
@@ -296,6 +308,20 @@ class SaveDocument:
             self.state[weapon + 4] = weapon_level
             self.state[weapon + 6] = aptitude
 
+    def set_all_unit_levels(self, level: int) -> int:
+        self._validate_range(level, 1, MAX_LEVEL, "Level")
+        level_offsets = [
+            self._unit_base(slot) + UNIT_LEVEL_OFFSET for slot in self.unit_slots()
+        ]
+        updates = [
+            offset
+            for offset in level_offsets
+            if struct.unpack_from("<H", self.state, offset)[0] != level
+        ]
+        for offset in updates:
+            struct.pack_into("<H", self.state, offset, level)
+        return len(updates)
+
     def equipment_values(self, slot: int) -> list[tuple[int, int, int, int]]:
         base = self._unit_base(slot) + EQUIPMENT_OFFSET
         return [
@@ -341,12 +367,74 @@ class SaveDocument:
     def subdue_all_innocence_warehouse(self) -> int:
         subdued_count = 0
         for slot in self.innocence_warehouse_slots():
+            record_id, value, _, _ = self.innocence_warehouse_values(slot)
+            if _is_unique_innocent(record_id, value):
+                continue
             base = self._innocence_warehouse_base(slot)
             flag = base + INNOCENCE_WAREHOUSE_SUBDUED_OFFSET
             if not self.state[flag]:
                 self.state[flag] = 1
                 subdued_count += 1
         return subdued_count
+
+    def move_all_residents_to_innocence_warehouse(self) -> tuple[int, int, int]:
+        sources: list[tuple[int, bytes]] = []
+        protected_count = 0
+        item_bases = [
+            self._item_base(slot, item_index)
+            for slot in self.unit_slots()
+            for item_index, item in enumerate(self.equipment_values(slot))
+            if item[0] != 0
+        ]
+        item_bases.extend(self._item_storage_bases())
+
+        for item_base in item_bases:
+            for index in range(ITEM_RESIDENT_COUNT):
+                resident = (
+                    item_base
+                    + ITEM_RESIDENT_OFFSET
+                    + index * ITEM_RESIDENT_SIZE
+                )
+                resident_id = struct.unpack_from(
+                    "<H", self.state, resident + ITEM_RESIDENT_ID_OFFSET
+                )[0]
+                if resident_id == 0:
+                    continue
+                resident_value = struct.unpack_from(
+                    "<I", self.state, resident + ITEM_RESIDENT_LEVEL_OFFSET
+                )[0]
+                if _is_unique_innocent(resident_id, resident_value):
+                    protected_count += 1
+                    continue
+                sources.append(
+                    (
+                        resident,
+                        bytes(self.state[resident : resident + ITEM_RESIDENT_SIZE]),
+                    )
+                )
+
+        if not sources:
+            return 0, 0, protected_count
+
+        active_slots = self.innocence_warehouse_slots()
+        remaining_capacity = max(
+            0, INNOCENCE_WAREHOUSE_TRANSFER_CAPACITY - len(active_slots)
+        )
+        free_slots = [
+            slot
+            for slot in range(INNOCENCE_WAREHOUSE_COUNT - 1)
+            if self.innocence_warehouse_values(slot)[0] == 0
+        ][:remaining_capacity]
+        moved_count = min(len(sources), len(free_slots))
+        for (source, record), slot in zip(sources[:moved_count], free_slots):
+            destination = self._innocence_warehouse_base(slot)
+            self.state[
+                destination : destination + INNOCENCE_WAREHOUSE_ENTRY_SIZE
+            ] = record
+            self.state[source : source + ITEM_RESIDENT_SIZE] = bytes(
+                ITEM_RESIDENT_SIZE
+            )
+        return moved_count, len(sources) - moved_count, protected_count
 
     def set_equipment(self, slot: int, values: list[tuple[int, int, int, int]]) -> None:
         if len(values) != EQUIPMENT_COUNT:
@@ -500,6 +588,15 @@ class SaveDocument:
             slot, 0, INNOCENCE_WAREHOUSE_COUNT - 1, "Innocence warehouse slot"
         )
         return INNOCENCE_WAREHOUSE_OFFSET + slot * INNOCENCE_WAREHOUSE_ENTRY_SIZE
+
+    def _item_storage_bases(self) -> list[int]:
+        bases: list[int] = []
+        for index in range(ITEM_STORAGE_MAX_COUNT):
+            item_base = ITEM_STORAGE_OFFSET + index * EQUIPMENT_SIZE
+            if self._item_values(item_base)[0] == 0:
+                return bases
+            bases.append(item_base)
+        raise ValueError("could not find the end of the saved item list")
 
     def _item_base(self, slot: int, item_index: int) -> int:
         self._validate_range(item_index, 0, EQUIPMENT_COUNT - 1, "Equipment slot")
