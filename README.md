@@ -23,7 +23,10 @@ The first version edits:
 
 - HL (64-bit) and Item Points
 - Character level and Mana
-- A batch action to set levels for all army and reserve characters
+- A batch action to set levels for all army and reserve characters while
+  approximately scaling saved base growth stats
+- Actions to raise one character's or all army/reserve characters' base growth
+  stats to at least 10,000,000, preserving any higher values
 - Ten weapon mastery levels and aptitudes
 - The five equipped-item IDs, levels, types, and ranks for a selected character
 - A batch action to set equipped-item levels across army and reserve characters
@@ -54,7 +57,17 @@ maximization is not available because the record IDs have not been mapped
 reliably to the game's type-specific caps.
 `SystemSave.sav` is not edited. Equipment IDs are raw game IDs; the editor does
 not validate them against the game's item database, and changing an ID does not
-copy the other item's properties. Item levels can be set from 0 to 9999. The
+copy the other item's properties. Item levels can be set from 0 to 9999.
+
+Character level scaling and the 10,000,000 base-stat action target the saved
+base growth values (HP, SP, ATK, DEF, INT, RES, HIT, and SPD), not current/max
+HP/SP or equipment, aptitudes, extracts, Chara World bonuses, or other stat
+sources. The level-growth formula remains approximate. The 10,000,000 minimum
+is based on community reports for most level-grown stats; HP and SP may have
+higher game caps, so this is not their proven absolute maximum. The references
+are the
+[Steam stat discussion](https://steamcommunity.com/app/803600/discussions/0/1748980761809715801/)
+and the [D5ModKit unit-field notes](https://github.com/eraser4521/D5ModKit/blob/main/d5lib/native/d5auto.c).
 
 Click **Residents...** beside an equipped item to edit its nine resident slots.
 Resident IDs are raw game values (0 means empty); the editor preserves unmapped

@@ -26,6 +26,9 @@ UNIT_USED_OFFSET = 0x0
 UNIT_NAME_OFFSET = 0xBC8
 UNIT_LEVEL_OFFSET = 0x2DFC
 UNIT_MANA_OFFSET = 0x2DF8
+# Base growth stats: HP, SP, ATK, DEF, INT, RES, HIT, SPD.
+UNIT_BASE_STAT_OFFSETS = tuple(range(0x2D18, 0x2D58, 8))
+MAX_BASE_STAT_VALUE = 10_000_000
 UNIT_WEAPON_OFFSET = 0x2DA8
 WEAPON_COUNT = 10
 WEAPON_SIZE = 8
@@ -300,27 +303,102 @@ class SaveDocument:
             self._validate_range(aptitude, 0, 0xFF, "Weapon aptitude")
 
         base = self._unit_base(slot)
+        current_level = struct.unpack_from(
+            "<H", self.state, base + UNIT_LEVEL_OFFSET
+        )[0]
+        parameter_updates = self._scaled_base_stat_updates(
+            base, current_level, level
+        )
         struct.pack_into("<H", self.state, base + UNIT_LEVEL_OFFSET, level)
         struct.pack_into("<I", self.state, base + UNIT_MANA_OFFSET, mana)
+        for offset, value in parameter_updates:
+            struct.pack_into("<Q", self.state, offset, value)
         for index, (weapon_level, aptitude) in enumerate(weapon_values):
             weapon = base + UNIT_WEAPON_OFFSET + index * WEAPON_SIZE
             struct.pack_into("<I", self.state, weapon, _weapon_experience(weapon_level))
             self.state[weapon + 4] = weapon_level
             self.state[weapon + 6] = aptitude
 
-    def set_all_unit_levels(self, level: int) -> int:
+    def set_all_unit_levels_and_approximate_stats(self, level: int) -> int:
         self._validate_range(level, 1, MAX_LEVEL, "Level")
-        level_offsets = [
-            self._unit_base(slot) + UNIT_LEVEL_OFFSET for slot in self.unit_slots()
-        ]
-        updates = [
-            offset
-            for offset in level_offsets
-            if struct.unpack_from("<H", self.state, offset)[0] != level
-        ]
-        for offset in updates:
-            struct.pack_into("<H", self.state, offset, level)
-        return len(updates)
+        level_updates: list[tuple[int, int]] = []
+        parameter_updates: list[tuple[int, int]] = []
+        changed_count = 0
+
+        for slot in self.unit_slots():
+            base = self._unit_base(slot)
+            level_offset = base + UNIT_LEVEL_OFFSET
+            current_level = struct.unpack_from("<H", self.state, level_offset)[0]
+            parameter_updates.extend(
+                self._scaled_base_stat_updates(base, current_level, level)
+            )
+
+            if current_level != level:
+                level_updates.append((level_offset, level))
+                changed_count += 1
+
+        for offset, value in level_updates:
+            struct.pack_into("<H", self.state, offset, value)
+        for offset, value in parameter_updates:
+            struct.pack_into("<Q", self.state, offset, value)
+        return changed_count
+
+    def set_unit_base_stats(self, slot: int) -> bool:
+        base = self._unit_base(slot)
+        updates = self._base_stat_max_updates(base)
+        for offset, value in updates:
+            struct.pack_into("<Q", self.state, offset, value)
+        return bool(updates)
+
+    def set_all_unit_base_stats(self) -> int:
+        updates: list[tuple[int, int]] = []
+        changed_slots = set()
+        for slot in self.unit_slots():
+            base = self._unit_base(slot)
+            unit_updates = self._base_stat_max_updates(base)
+            if unit_updates:
+                changed_slots.add(slot)
+                updates.extend(unit_updates)
+
+        for offset, value in updates:
+            struct.pack_into("<Q", self.state, offset, value)
+        return len(changed_slots)
+
+    def _base_stat_max_updates(self, base: int) -> list[tuple[int, int]]:
+        updates = []
+        for relative_offset in UNIT_BASE_STAT_OFFSETS:
+            offset = base + relative_offset
+            current_value = struct.unpack_from("<Q", self.state, offset)[0]
+            if current_value < MAX_BASE_STAT_VALUE:
+                updates.append((offset, MAX_BASE_STAT_VALUE))
+        return updates
+
+    def _scaled_base_stat_updates(
+        self, base: int, current_level: int, new_level: int
+    ) -> list[tuple[int, int]]:
+        if current_level == 0:
+            slot = (base - ROSTER_OFFSET) // UNIT_SIZE
+            raise ValueError(
+                f"cannot scale parameters for unit slot {slot + 1} "
+                "because its current level is 0"
+            )
+
+        updates = []
+        for relative_offset in UNIT_BASE_STAT_OFFSETS:
+            offset = base + relative_offset
+            current_value = struct.unpack_from("<Q", self.state, offset)[0]
+            scaled_value = (
+                current_value * new_level + current_level // 2
+            ) // current_level
+            if scaled_value > 0xFFFFFFFFFFFFFFFF:
+                slot = (base - ROSTER_OFFSET) // UNIT_SIZE
+                raise ValueError(
+                    f"scaled parameter at unit slot {slot + 1} exceeds "
+                    "the save format limit"
+                )
+            if scaled_value != current_value:
+                updates.append((offset, scaled_value))
+        return updates
 
     def equipment_values(self, slot: int) -> list[tuple[int, int, int, int]]:
         base = self._unit_base(slot) + EQUIPMENT_OFFSET

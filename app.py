@@ -10,6 +10,7 @@ from .savefile import (
     ITEM_RESIDENT_COUNT,
     INNOCENCE_WAREHOUSE_COUNT,
     MAX_EQUIPMENT_LEVEL,
+    MAX_BASE_STAT_VALUE,
     MAX_LEVEL,
     WEAPON_COUNT,
     SaveDocument,
@@ -61,7 +62,7 @@ class SaveEditor:
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
             top,
-            text="Set all character levels...",
+            text="Set all character levels + stats...",
             command=self.set_all_character_levels,
         ).pack(side="left", padx=(8, 0))
         ttk.Button(
@@ -127,6 +128,16 @@ class SaveEditor:
         ttk.Label(character, textvariable=self.class_value).grid(
             row=0, column=5, padx=6, sticky="w"
         )
+        ttk.Button(
+            character,
+            text="Max base stats...",
+            command=self.max_selected_character_parameters,
+        ).grid(row=0, column=6, padx=(8, 0))
+        ttk.Button(
+            roster,
+            text="Max stats for all...",
+            command=self.max_all_character_parameters,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
         weapons = ttk.LabelFrame(editor, text="Weapon mastery", padding=8)
         weapons.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -712,7 +723,7 @@ class SaveEditor:
             return
 
         level = simpledialog.askinteger(
-            "Set all character levels",
+            "Set all character levels and stats",
             f"New level (1-{MAX_LEVEL}):",
             minvalue=1,
             maxvalue=MAX_LEVEL,
@@ -721,15 +732,21 @@ class SaveEditor:
         if level is None:
             return
         if not messagebox.askyesno(
-            "Confirm character level change",
-            f"Set every army and reserve character to level {level}?",
+            "Confirm approximate level and stat change",
+            f"Set every army and reserve character to level {level} and "
+            "scale its saved base growth stats by the new/current level ratio? "
+            "This is approximate, not the game's exact class and reincarnation "
+            "growth calculation. Equipment, aptitudes, extracts, and other "
+            "stat sources are not changed. Save a backup first.",
             parent=self.root,
         ):
             return
 
         try:
-            self._apply_current_unit()
-            updated_count = self.document.set_all_unit_levels(level)
+            self._apply_current_unit(apply_level=False)
+            updated_count = (
+                self.document.set_all_unit_levels_and_approximate_stats(level)
+            )
         except ValueError as error:
             messagebox.showerror(
                 "Could not set character levels", str(error), parent=self.root
@@ -739,12 +756,84 @@ class SaveEditor:
         self._refresh_unit_list()
         if self.selected_slot is not None:
             self._show_unit(self.selected_slot)
-        self.status_text.set(f"Character levels updated: {updated_count}")
+        self.status_text.set(
+            f"Character levels and approximate parameters updated: {updated_count}"
+        )
 
-    def _apply_current_unit(self) -> None:
+    def max_selected_character_parameters(self) -> None:
+        if self.document is None or self.selected_slot is None:
+            messagebox.showinfo(
+                "No character selected", "Open a save and select a character."
+            )
+            return
+
+        info = self.document.unit_info(self.selected_slot)
+        if not messagebox.askyesno(
+            "Set character base stats",
+            f"Raise {info['name']}'s saved base level-growth stats to at least "
+            f"{MAX_BASE_STAT_VALUE:,}? This changes HP, SP, ATK, DEF, INT, RES, "
+            "HIT, and SPD, while preserving any higher values. Equipment, "
+            "aptitudes, extracts, and other bonuses are separate. HP/SP may "
+            "have higher game caps. Save a backup first.",
+            parent=self.root,
+        ):
+            return
+
+        try:
+            self._apply_current_unit(apply_level=False)
+            changed = self.document.set_unit_base_stats(self.selected_slot)
+        except ValueError as error:
+            messagebox.showerror(
+                "Could not set character base stats", str(error), parent=self.root
+            )
+            return
+
+        self._show_unit(self.selected_slot)
+        self.status_text.set(
+            "Selected character base stats raised to at least 10,000,000"
+            if changed
+            else "Selected character base stats were already at or above 10,000,000"
+        )
+
+    def max_all_character_parameters(self) -> None:
+        if self.document is None:
+            messagebox.showinfo("No save loaded", "Open a save file first.")
+            return
+        if not messagebox.askyesno(
+            "Set all character base stats",
+            f"Raise every army and reserve character's saved base level-growth "
+            f"stats to at least {MAX_BASE_STAT_VALUE:,}? This changes HP, SP, "
+            "ATK, DEF, INT, RES, HIT, and SPD, while preserving any higher "
+            "values. Equipment, aptitudes, extracts, and other bonuses are "
+            "separate. HP/SP may have higher game caps. Save a backup first.",
+            parent=self.root,
+        ):
+            return
+
+        try:
+            self._apply_current_unit(apply_level=False)
+            updated_count = self.document.set_all_unit_base_stats()
+        except ValueError as error:
+            messagebox.showerror(
+                "Could not set character base stats", str(error), parent=self.root
+            )
+            return
+
+        if self.selected_slot is not None:
+            self._show_unit(self.selected_slot)
+        self.status_text.set(
+            f"Character base stats raised to at least 10,000,000: "
+            f"{updated_count} characters"
+        )
+
+    def _apply_current_unit(self, *, apply_level: bool = True) -> None:
         if self.document is None or self.selected_slot is None:
             return
-        level = self._integer(self.unit_level_value.get(), "Level")
+        level = (
+            self._integer(self.unit_level_value.get(), "Level")
+            if apply_level
+            else int(self.document.unit_info(self.selected_slot)["level"])
+        )
         mana = self._integer(self.unit_mana_value.get(), "Mana")
         weapons = [
             (

@@ -31,6 +31,7 @@ from d5_save_editor.savefile import (
     INNOCENCE_WAREHOUSE_SUBDUED_OFFSET,
     INNOCENCE_WAREHOUSE_TRANSFER_CAPACITY,
     MAX_EQUIPMENT_LEVEL,
+    MAX_BASE_STAT_VALUE,
     MAX_LEVEL,
     MAX_HL,
     RESERVE_COUNT_OFFSET,
@@ -38,6 +39,7 @@ from d5_save_editor.savefile import (
     SAVE_MAGIC,
     STATE_SIZE,
     UNIT_LEVEL_OFFSET,
+    UNIT_BASE_STAT_OFFSETS,
     UNIT_MANA_OFFSET,
     UNIT_NAME_OFFSET,
     UNIT_SIZE,
@@ -118,6 +120,58 @@ class SaveFileTests(unittest.TestCase):
             struct.unpack_from("<H", saved.state, item + EQUIPMENT_LEVEL_OFFSET)[0],
             250,
         )
+
+    def test_set_unit_scales_parameters_with_level(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        slot = document.unit_slots()[0]
+        base = ROSTER_OFFSET + slot * UNIT_SIZE
+        first_parameter = base + UNIT_BASE_STAT_OFFSETS[0]
+        current_hp = base + 0x2CC8
+        struct.pack_into("<Q", document.state, first_parameter, 120)
+        struct.pack_into("<Q", document.state, current_hp, 456)
+        document.state[base + 0x2D60] = 0xA5
+
+        document.set_unit(
+            slot,
+            20,
+            document.unit_info(slot)["mana"],
+            document.weapon_values(slot),
+        )
+
+        self.assertEqual(document.unit_info(slot)["level"], 20)
+        self.assertEqual(
+            struct.unpack_from("<Q", document.state, first_parameter)[0],
+            240,
+        )
+        self.assertEqual(struct.unpack_from("<Q", document.state, current_hp)[0], 456)
+        self.assertEqual(document.state[base + 0x2D60], 0xA5)
+
+    def test_set_unit_base_stats_changes_only_base_growth_fields(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        slot = document.unit_slots()[0]
+        base = ROSTER_OFFSET + slot * UNIT_SIZE
+        current_values = (0x2CC8, 0x2CD0, 0x2CD8, 0x2CE0, 0x2CE8)
+        for index, relative_offset in enumerate(current_values):
+            struct.pack_into("<Q", document.state, base + relative_offset, 100 + index)
+        struct.pack_into(
+            "<Q", document.state, base + UNIT_BASE_STAT_OFFSETS[0], 12_000_000
+        )
+        document.state[base + 0x2D60] = 0xA5
+
+        self.assertTrue(document.set_unit_base_stats(slot))
+        self.assertFalse(document.set_unit_base_stats(slot))
+
+        for index, relative_offset in enumerate(UNIT_BASE_STAT_OFFSETS):
+            self.assertEqual(
+                struct.unpack_from("<Q", document.state, base + relative_offset)[0],
+                12_000_000 if index == 0 else MAX_BASE_STAT_VALUE,
+            )
+        for index, relative_offset in enumerate(current_values):
+            self.assertEqual(
+                struct.unpack_from("<Q", document.state, base + relative_offset)[0],
+                100 + index,
+            )
+        self.assertEqual(document.state[base + 0x2D60], 0xA5)
 
     def test_source_file_is_never_overwritten(self) -> None:
         document = SaveDocument.from_bytes(make_save(), "source.sav")
@@ -266,7 +320,7 @@ class SaveFileTests(unittest.TestCase):
         )
         self.assertEqual(document.set_all_equipment_levels(target_level), 0)
 
-    def test_set_all_unit_levels_covers_army_and_reserve(self) -> None:
+    def test_set_all_unit_levels_scales_parameters_for_army_and_reserve(self) -> None:
         document = SaveDocument.from_bytes(make_save())
         army_second = 1
         reserve_slot = UNIT_SLOTS - 1
@@ -277,25 +331,125 @@ class SaveFileTests(unittest.TestCase):
             struct.pack_into("<I", document.state, base + UNIT_USED_OFFSET, 1)
             struct.pack_into("<H", document.state, base + UNIT_LEVEL_OFFSET, level)
 
+        for slot, base_level, value_step in (
+            (0, 10, 10),
+            (army_second, 20, 10),
+            (reserve_slot, 30, 30),
+        ):
+            base = ROSTER_OFFSET + slot * UNIT_SIZE
+            for index, relative_offset in enumerate(UNIT_BASE_STAT_OFFSETS):
+                struct.pack_into(
+                    "<Q",
+                    document.state,
+                    base + relative_offset,
+                    base_level * 10 + index * value_step,
+                )
+            document.state[base + 0x2D60] = 0xA5
+
         before = bytes(document.state)
-        self.assertEqual(document.set_all_unit_levels(MAX_LEVEL), 3)
-        expected_offsets = sorted(
-            ROSTER_OFFSET + slot * UNIT_SIZE + UNIT_LEVEL_OFFSET + byte_index
-            for slot in (0, army_second, reserve_slot)
-            for byte_index in range(2)
+        self.assertEqual(
+            document.set_all_unit_levels_and_approximate_stats(20), 2
         )
         actual_offsets = [
             index
             for index, (old, new) in enumerate(zip(before, document.state))
             if old != new
         ]
-        self.assertEqual(actual_offsets, expected_offsets)
+        expected_offsets = set()
+        for slot in (0, reserve_slot):
+            base = ROSTER_OFFSET + slot * UNIT_SIZE
+            expected_offsets.update(
+                range(base + UNIT_LEVEL_OFFSET, base + UNIT_LEVEL_OFFSET + 2)
+            )
+            for relative_offset in UNIT_BASE_STAT_OFFSETS:
+                expected_offsets.update(
+                    range(base + relative_offset, base + relative_offset + 8)
+                )
+        self.assertTrue(expected_offsets.issuperset(actual_offsets))
+
         saved = SaveDocument.from_bytes(document.to_bytes())
         self.assertEqual(
             [saved.unit_info(slot)["level"] for slot in (0, army_second, reserve_slot)],
-            [MAX_LEVEL, MAX_LEVEL, MAX_LEVEL],
+            [20, 20, 20],
         )
-        self.assertEqual(saved.set_all_unit_levels(MAX_LEVEL), 0)
+        for index, relative_offset in enumerate(UNIT_BASE_STAT_OFFSETS):
+            self.assertEqual(
+                struct.unpack_from(
+                    "<Q", saved.state, ROSTER_OFFSET + relative_offset
+                )[0],
+                200 + index * 20,
+            )
+            self.assertEqual(
+                struct.unpack_from(
+                    "<Q",
+                    saved.state,
+                    ROSTER_OFFSET + army_second * UNIT_SIZE + relative_offset,
+                )[0],
+                200 + index * 10,
+            )
+            self.assertEqual(
+                struct.unpack_from(
+                    "<Q",
+                    saved.state,
+                    ROSTER_OFFSET + reserve_slot * UNIT_SIZE + relative_offset,
+                )[0],
+                200 + index * 20,
+            )
+        self.assertEqual(saved.state[ROSTER_OFFSET + 0x2D60], 0xA5)
+        self.assertEqual(
+            document.set_all_unit_levels_and_approximate_stats(20), 0
+        )
+
+    def test_set_all_unit_base_stats_covers_army_and_reserve(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        second_army_slot = 1
+        reserve_slot = UNIT_SLOTS - 1
+        struct.pack_into("<h", document.state, ARMY_COUNT_OFFSET, 2)
+        struct.pack_into("<h", document.state, RESERVE_COUNT_OFFSET, 1)
+
+        for slot in (second_army_slot, reserve_slot):
+            base = ROSTER_OFFSET + slot * UNIT_SIZE
+            struct.pack_into("<I", document.state, base + UNIT_USED_OFFSET, 1)
+            for index, relative_offset in enumerate(UNIT_BASE_STAT_OFFSETS):
+                struct.pack_into("<Q", document.state, base + relative_offset, index + 1)
+            struct.pack_into("<Q", document.state, base + 0x2CC8, 777)
+
+        self.assertEqual(document.set_all_unit_base_stats(), 3)
+        self.assertEqual(document.set_all_unit_base_stats(), 0)
+        for slot in (0, second_army_slot, reserve_slot):
+            base = ROSTER_OFFSET + slot * UNIT_SIZE
+            for relative_offset in UNIT_BASE_STAT_OFFSETS:
+                self.assertEqual(
+                    struct.unpack_from("<Q", document.state, base + relative_offset)[0],
+                    MAX_BASE_STAT_VALUE,
+                )
+            self.assertEqual(
+                struct.unpack_from("<Q", document.state, base + 0x2CC8)[0],
+                0 if slot == 0 else 777,
+            )
+
+    def test_set_all_unit_levels_rejects_zero_level_without_partial_changes(self) -> None:
+        document = SaveDocument.from_bytes(make_save())
+        second_slot = 1
+        struct.pack_into("<h", document.state, ARMY_COUNT_OFFSET, 2)
+        struct.pack_into(
+            "<I",
+            document.state,
+            ROSTER_OFFSET + second_slot * UNIT_SIZE + UNIT_USED_OFFSET,
+            1,
+        )
+        struct.pack_into(
+            "<H",
+            document.state,
+            ROSTER_OFFSET + second_slot * UNIT_SIZE + UNIT_LEVEL_OFFSET,
+            0,
+        )
+        before = bytes(document.state)
+
+        with self.assertRaisesRegex(ValueError, "current level is 0"):
+            document.set_all_unit_levels_and_approximate_stats(20)
+
+        self.assertEqual(bytes(document.state), before)
 
     def test_innocence_warehouse_edit_preserves_unmapped_bytes(self) -> None:
         document = SaveDocument.from_bytes(make_save())
@@ -617,9 +771,9 @@ class SaveFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             document.set_all_equipment_levels(MAX_EQUIPMENT_LEVEL + 1)
         with self.assertRaises(ValueError):
-            document.set_all_unit_levels(0)
+            document.set_all_unit_levels_and_approximate_stats(0)
         with self.assertRaises(ValueError):
-            document.set_all_unit_levels(MAX_LEVEL + 1)
+            document.set_all_unit_levels_and_approximate_stats(MAX_LEVEL + 1)
         with self.assertRaises(ValueError):
             document.set_residents(slot, 0, [(0, 0, 0, False)] * 8)
         with self.assertRaises(ValueError):
